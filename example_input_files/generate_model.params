@@ -1,0 +1,17 @@
+VentDist l     #options: l = lognormal, b = bimodal lognorm
+Unit u     #options u = well-mixed bag, a = asymmetric acinus model
+Tidal_Volume 0.9    #VT in Litres (av. volume of inhal. or exhal.)
+Tidal_Volume_Frac_Range 0.18   #tidal volumes randomly drawn in uniform range VT * U(1-TVFR,1+TVFR) 
+Breath_period 5    #time for full inhalation + exhalation (secs)
+FRC 3      #functional residual capacity (L)
+VD 0.2     #total dead-space volume (L)
+Sigma 0.5    #VH parameter
+#VD_shared_fraction 0    #fraction of airway dead-space that is shared between components (0-1), default is 0
+#Mu_ratio 2.0    #if VentDist=b, this is the ratio between average ventilation rate in the fast region compared to the slow region
+#Sigma_ratio 1.0      #ratio between VH parameter for fast vs. slow region, (note sigma for slow region is the parameter Sigma)
+#V_fast_frac 0.5     #fraction of the lung volume in the "fast" region at FRC
+#Acin_Asymm 0.5     #asymmetry parameter for asymm acinus model (0-1)
+#Acin_diff_tscale 5.0   #diffusion time-scale (e-time for diffusion process in asymm acinus model in secs)
+
+
+
