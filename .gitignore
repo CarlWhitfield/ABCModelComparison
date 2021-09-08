@@ -18,3 +18,4 @@ ABCModelComparison/Release/*
 ABCModelComparison/ProcessMBWData/fixed_timestep_models.h
 ABCModelComparison/ProcessMBWData/dynamic_timestep_models.cpp
 ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
+*.opensdf
