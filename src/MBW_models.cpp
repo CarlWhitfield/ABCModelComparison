@@ -6,6 +6,7 @@
 #include<file_manip.h>
 #include<map>
 
+
 extern std::shared_ptr<boost::random::mt19937> rng;  //pseudorandom number generator
 
 void MBWModelInputs::read_inputs(const std::string & filepath)
@@ -1587,24 +1588,96 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 
 	//these can be defined in builder as they don't change
 	int MaxCondGen = 15;
-	int MaxSplitNo = 6;
-	double L2dratio = 3.0;
+	double L2Dratio = 3.0;
+	int NLmin = 20;
+	//can we get max flow rate from the data? -- for now guess 0.5L/s
+	double DiffConstDm2 = 0.00105;  //SF6 
+	double PeMax = 1.0;
+	double LengthScaleFactor = pow(0.5,1.0/3.0);
 	//end
-
+	
 	double VD = param_dict.at(VD_PARAM_NAME);
 	double VDSfrac = param_dict.at(VDSFRAC_PARAM_NAME);
-	//this determines generation where it splits
-	//each gen has same volume 
-	int SplitDepth = int(VDSfrac*MaxCondGen); //round down to nearest generation number
-
+	double GenSep = VDSfrac*(MaxCondGen);
+	double V0L = (VD - MouthAndMachineDSVol)/(MaxCondGen+1);  //V per gen
+	double R0dm = pow(3*V0L*(1-LengthScaleFactor)/(2*M_PI*L2Dratio*log(2.0)),1.0/3.0);
+	//assume scherer diff in airways
+	double dxapprox = 2*0.37*R0dm*PeMax;
+	double Ltot = 2*R0dm*L2Dratio*(1.0-pow(LengthScaleFactor,MaxCondGen+1))/(1.0-LengthScaleFactor);
+	double Lsep = 2*R0dm*L2Dratio*(1.0-pow(LengthScaleFactor,GenSep))/(1.0-LengthScaleFactor);
+	int NL = max(NLmin,int(ceil(Ltot/dxapprox)));
+	double dx = Ltot/double(NL);
+	double NLsep = int(Lsep/dx);
+	int NCondNodes = 1 + NLsep + (NL - NLsep)*NCOMPS;
+	int NCondEdges = NLsep + (1 + NL - NLsep)*NCOMPS;
 	std::vector<Eigen::Triplet<double>> IncTrips;
-	
+	Eigen::VectorXd EdgeCSA = Eigen::VectorXd::Zero(NCondEdges);
+	Eigen::VectorXd NodeVol = Eigen::VectorXd::Zero(NCondNodes);
+	IncTrips.reserve(2*NCondEdges);
+	//add in something to deal with mouth and DS volume here
 
-	for(int j = 0; j <= SplitDepth; j++)
+
+	//
+	double xh = 0;
+	double Vint0 = 0;
+	double invdx = 1.0/dx;
+	double VolSF = log(2)/(3.0*(1 - LengthScaleFactor));
+	double xSF = 0.5/(L2Dratio*R0dm);
+	double V0 = 2*M_PI*R0dm*R0dm*R0dm*L2Dratio;
+	for(int j = 0; j < NL; j++)
 	{
+		double z0 = 3*log(1.0-xh*xSF);  //replace with function
+		double z1 = 3*log(1.0-(xh+0.5*dx)*xSF);
+		double z2 = 3*log(1.0-(xh+dx)*xSF);
+		double Vint1 = V0*VolSF*(z1-z0);  //from this node to +dx/2
+		double Vint2 = V0*VolSF*(z2-z1);   //from +dx/2 to + dx
+		double CSAh = invdx*(Vint1 + Vint2);
+		double Nvolh = 0.5*(Vint0 + Vint1);
+		if(j < NLsep)
+		{
+			IncTrips.push_back(Eigen::Triplet<double>(j,j, 1.0));
+			IncTrips.push_back(Eigen::Triplet<double>(j,j+1,-1.0));
+			EdgeCSA[j] = CSAh;
+			NodeVol[j] = Nvolh;
+		}
+		else
+		{
+			if(j == NLsep)
+			{
+				int NodeIn = NLsep;
+				NodeVol[NodeIn] = Nvolh;
+				for(int n = 0; n < NCOMPS; n++)
+				{
+					int EdgeNo = NLsep + n;
+					int NodeOut = NLsep + n + 1;
+					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeIn,  1.0));
+					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeOut,-1.0));
+					EdgeCSA[EdgeNo] = CSAh/NCOMPS;
+				}
+			}
+			else
+			{
+				for(int n = 0; n < NCOMPS; n++)
+				{
+					int EdgeNo = NLsep + (1 + j - NLsep)*n;
+					int NodeIn = NLsep + (j - NLsep)*n + 1;
+					int NodeOut = NLsep + (1 + j - NLsep)*n + 1;
+					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeIn,  1.0));
+					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeOut,-1.0));
+					EdgeCSA[EdgeNo] = CSAh/NCOMPS;
+					NodeVol[NodeIn] = Nvolh/NCOMPS;
+					if(j==NL-1)
+					{
+						NodeVol[NodeOut] = Vint2;
+					}
+				}
+			}
+		}
 
-
+		xh += dx;
+		Vint0 = Vint2;
 	}
+
 
 
 	//THIS WOULD BE USED IF RESOLVING BRANCHING, PROBABLY UNECESSARY

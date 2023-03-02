@@ -1,11 +1,13 @@
 #ifndef MBW_MODELS_H
 #define MBW_MODELS_H
 
+#define _USE_MATH_DEFINES
 #include"ABC_model_selection.h"
 #include"compartmental.h"
 #include<Eigen/Sparse>
 #include<limits>
 #include<map>
+#include<math.h>
 
 //Define which data to fit to
 #define USE_SF6_CONC true
