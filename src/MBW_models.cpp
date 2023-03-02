@@ -6,6 +6,10 @@
 #include<file_manip.h>
 #include<map>
 
+//TODO
+//using NCOMPS in parts and opt.Nunits in others, needs to be consistent
+// 
+
 
 extern std::shared_ptr<boost::random::mt19937> rng;  //pseudorandom number generator
 
@@ -769,6 +773,7 @@ void BasicLognormalAsyncModelGenerator::generate_model(const std::vector<double>
 	m->build_model(opts, params, this->param_names);
 }
 
+
 void MBWModelBase::set_input_data(const MBWModelInputs * inputs)
 {
 	//pointers to constant quantities first (no need to copy locally)
@@ -800,6 +805,72 @@ void MBWModelBase::set_input_data(const MBWModelInputs * inputs)
 	this->mouth_point = inputs->rebreathe_vol;
 	this->conc_measurement_point = inputs->rebreathe_vol - inputs->machine_ds; 
 	this->MRI_bag_vol = inputs->MRI_vbag;
+}
+
+void MBWModelBase::build_model(const MBWModelOptions & opt,
+							   const std::vector<double> & params_h,
+		                       const std::vector<std::string> param_names_h)
+{
+	using namespace std;
+	map<std::string, double> param_dict;
+	for(int ip = 0; ip < int(params_h.size()); ip++)
+	{
+		param_dict[param_names_h[ip]] = params_h[ip];
+	}
+
+	//process parameters
+	double VDSfrac = 0;
+	double VD = param_dict.at(VD_PARAM_NAME);
+	if(param_dict.find(VDSFRAC_PARAM_NAME) != param_dict.end()) 
+	{
+		VDSfrac = param_dict.at(VDSFRAC_PARAM_NAME);
+	}
+
+	double Vbag = (param_dict.at(FRC_PARAM_NAME))/ ((double) opt.Nunits);
+	//assign function pointers based on options
+	//ventilation dist options
+	if(opt.vent_dist_type == LOGNORMAL_CODE) this->generate_vent_dist = &generate_vent_dist_lognormal_rand;
+	else if(opt.vent_dist_type == BIMODAL_CODE) this->generate_vent_dist = &generate_vent_dist_bimodal_rand;
+	//lung unit options
+	if(opt.lung_unit_type == BASIC_UNIT_CODE) this->initialise_lung_unit = &build_basic_lung_unit;
+	else if(opt.lung_unit_type == ASYMM_UNIT_CODE) this->initialise_lung_unit = &build_asymm_lung_unit;
+
+	//generate ventilation dist
+	vector<double> Vratios;
+	this->generate_vent_dist(param_dict, opt.Nunits, Vratios);
+	this->build_airway_model(VD, VDSfrac, Vbag, Vratios, opt);
+
+	//sync option
+	if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
+	else this->create_async_vent_solver(param_dict.at(DELAY_PARAM_NAME));
+	this->washout_start_inflation.resize(this->Cinit.size());
+	vector<double> Deltas;
+	Deltas.resize(this->Cinit.size());
+	double total_deltas = 0;
+	for(size_t n = 1; n < this->Cinit.size(); n++)
+	{
+		std::stringstream ss;
+		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+		Deltas[n] = param_dict.at(ss.str().c_str());
+		total_deltas += Deltas[n];
+	}
+	Deltas[0] = -total_deltas/(this->Cinit.size() + total_deltas);   
+	//by definition, mean must be 0, so first test must cancel out the rest
+	this->washout_start_inflation[0] = Deltas[0]*param_dict.at(FRC_PARAM_NAME);
+	for(size_t n = 1; n < this->Cinit.size(); n++)
+	{
+		std::stringstream ss;
+		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+		this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
+	}
+
+
+	//assume step is relative to DS volume
+	this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
+	this->params = params_h;
+	this->NMRIPoints = opt.NMR_samples;
+	this->simulate_washin = opt.simulate_washin;
+	this->washout_start_timepoint = opt.washout_start_timepoint;
 }
 
 void MBWModelBase::run_washout_model(MBWModelOutputs* output)
@@ -863,36 +934,33 @@ void MBWModelBase::simulate(MBWModelOutputs* output)
 	this->run_MRI_model(output);
 }
 
-double CompartmentalModelBase::get_mouth_conc()
+void MBWModelBase::create_sync_vent_solver()
 {
-	if(this->use_mouth_conc_generic)
+	for(size_t i = 0; i < this->units.size(); i++)
 	{
-		return this->get_mouth_conc_generic();
+		this->units[i]->set_delay_ts(0.0);
 	}
-	else
-	{
-		return this->get_end_SDS_conc();
-	}
+	this->vent_solver = std::make_shared<VentilationSolver>(&(this->units));
 }
 
-void CompartmentalModelBase::build_model(const MBWModelOptions & opt,
-										 const std::vector<double> & params_h,
-		                                 const std::vector<std::string> param_names_h)
+void MBWModelBase::create_async_vent_solver(const double & delay_ts)
 {
-	using namespace std;
-	map<std::string, double> param_dict;
-	for(int ip = 0; ip < int(params_h.size()); ip++)
-	{
-		param_dict[param_names_h[ip]] = params_h[ip];
-	}
+	generate_async_delays(this->units, delay_ts);
 
+	this->vent_solver = std::make_shared<AsyncVentilationSolver>(&(this->units), this->sim_vol_steps[0], 
+		                                                         this->sim_step_durations->at(0));
+}
+
+void CompartmentalModelBase::build_airway_model(const double & VD, const double & VDSfrac,
+	     const double & Vbag, const vector<double> & Vratios, const MBWModelOptions & opt)
+{
 	vector<std::shared_ptr<FlexibleVolumeElement>> SDS(1);
 	double VDS = this->mouth_point;
-	double VDP = param_dict.at(VD_PARAM_NAME);
-	if(param_dict.find(VDSFRAC_PARAM_NAME) != param_dict.end()) //shared dead-space volume
+	double VDP = VD;
+	if(VDSrac > 0.0) //shared dead-space volume
 	{
-		VDS += param_dict.at(VDSFRAC_PARAM_NAME)*param_dict.at(VD_PARAM_NAME);
-		VDP -= param_dict.at(VDSFRAC_PARAM_NAME)*param_dict.at(VD_PARAM_NAME);
+		VDS += VDSfrac*param_dict.at(VD_PARAM_NAME);
+		VDP -= VDSfrac*param_dict.at(VD_PARAM_NAME);
 		this->use_mouth_conc_generic = true;
 	}
 	else
@@ -913,58 +981,29 @@ void CompartmentalModelBase::build_model(const MBWModelOptions & opt,
 		vector<std::shared_ptr<FlexibleVolumeElement>> PDS(1);
 		PDS[0] = std::make_shared<FlexibleVolumeElement>(VDperunit, 0, 0);
 		this->private_ds[i] = std::make_shared<DSVolume>(PDS);
-	}
+	}	
 
-	double Vbag = (param_dict.at(FRC_PARAM_NAME))/ ((double) opt.Nunits);
-	//assign function pointers based on options
-	//ventilation dist options
-	if(opt.vent_dist_type == LOGNORMAL_CODE) this->generate_vent_dist = &generate_vent_dist_lognormal_rand;
-	else if(opt.vent_dist_type == BIMODAL_CODE) this->generate_vent_dist = &generate_vent_dist_bimodal_rand;
-	//lung unit options
-	if(opt.lung_unit_type == BASIC_UNIT_CODE) this->initialise_lung_unit = &build_basic_lung_unit;
-	else if(opt.lung_unit_type == ASYMM_UNIT_CODE) this->initialise_lung_unit = &build_asymm_lung_unit;
-
-	//generate ventilation dist
-	vector<double> Vratios;
-	this->generate_vent_dist(param_dict, opt.Nunits, Vratios);
 	//build lung units
 	for(int i = 0; i < opt.Nunits; i++)
 	{
 		//build based on options
 		this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
 	}
-	//sync option
-	if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
-	else this->create_async_vent_solver(param_dict.at(DELAY_PARAM_NAME));
-	this->washout_start_inflation.resize(this->Cinit.size());
-	vector<double> Deltas;
-	Deltas.resize(this->Cinit.size());
-	double total_deltas = 0;
-	for(size_t n = 1; n < this->Cinit.size(); n++)
-	{
-		std::stringstream ss;
-		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
-		Deltas[n] = param_dict.at(ss.str().c_str());
-		total_deltas += Deltas[n];
-	}
-	Deltas[0] = -total_deltas/(this->Cinit.size() + total_deltas);   
-	//by definition, mean must be 0, so first test must cancel out the rest
-	this->washout_start_inflation[0] = Deltas[0]*param_dict.at(FRC_PARAM_NAME);
-	for(size_t n = 1; n < this->Cinit.size(); n++)
-	{
-		std::stringstream ss;
-		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
-		this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
-	}
 
 	//create mixing point
 	double mp_vol_scale = opt.mix_vol_frac_step*(VDS + VDP);
-	//assume step is relative to DS volume
-	this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
-	this->params = params_h;
-	this->NMRIPoints = opt.NMR_samples;
-	this->simulate_washin = opt.simulate_washin;
-	this->washout_start_timepoint = opt.washout_start_timepoint;
+}
+
+double CompartmentalModelBase::get_mouth_conc()
+{
+	if(this->use_mouth_conc_generic)
+	{
+		return this->get_mouth_conc_generic();
+	}
+	else
+	{
+		return this->get_end_SDS_conc();
+	}
 }
 
 void CompartmentalModelBase::measure_values(MBWModelOutputs* output)
@@ -1248,24 +1287,6 @@ double CompartmentalModelBase::breath_step(const double & dvol, const double & d
 	//(if inhaling, some or all will end up in DS, so needs to be subtracted to avoid missing
 
 	return exhaled_igvol;
-}
-
-void CompartmentalModelBase::create_sync_vent_solver()
-{
-
-	for(size_t i = 0; i < this->units.size(); i++)
-	{
-		this->units[i]->set_delay_ts(0.0);
-	}
-	this->vent_solver = std::make_shared<VentilationSolver>(&(this->units));
-}
-
-void CompartmentalModelBase::create_async_vent_solver(const double & delay_ts)
-{
-	generate_async_delays(this->units, delay_ts);
-
-	this->vent_solver = std::make_shared<AsyncVentilationSolver>(&(this->units), this->sim_vol_steps[0], 
-		                                                         this->sim_step_durations->at(0));
 }
 
 void generate_vent_dist_lognormal_rand(const std::map<std::string,double> & params, 
@@ -1572,9 +1593,8 @@ void AsyncVentilationSolver::compute_volume_changes(const double & dvol, const d
 	this->Vp_old = Vp_new;
 }
 
-void TrumpetModelBase::build_model(const MBWModelOptions & opt,
-								   const std::vector<double> & params_h,
-		                           const std::vector<std::string> param_names_h)
+void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSfrac, 
+	const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt)
 {
 	using namespace std;
 	map<std::string, double> param_dict;
@@ -1583,7 +1603,9 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 		param_dict[param_names_h[ip]] = params_h[ip];
 	}
 
-
+	double VDPhys = VD - this->machine_ds;
+	double VDMouth = this->MouthFrac*VDPhys;
+	double VDLung = (1-this->MouthFrac)*VDPhys;
 	
 
 	//these can be defined in builder as they don't change
@@ -1594,10 +1616,14 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 	double DiffConstDm2 = 0.00105;  //SF6 
 	double PeMax = 1.0;
 	double LengthScaleFactor = pow(0.5,1.0/3.0);
+	double MouthFrac = 0.2;
 	//end
 	
-	double VD = param_dict.at(VD_PARAM_NAME);
-	double VDSfrac = param_dict.at(VDSFRAC_PARAM_NAME);
+	//add in something to deal with mouth and DS volume here
+	vector<std::shared_ptr<FlexibleVolumeElement>> ExtraDS(1);
+	ExtraDS[0] = std::make_shared<FlexibleVolumeElement>(VD - VDLung, 0, 0);
+	this->extra_ds = std::make_shared<DSVolume>(ExtraDS);
+
 	double GenSep = VDSfrac*(MaxCondGen);
 	double V0L = (VD - MouthAndMachineDSVol)/(MaxCondGen+1);  //V per gen
 	double R0dm = pow(3*V0L*(1-LengthScaleFactor)/(2*M_PI*L2Dratio*log(2.0)),1.0/3.0);
@@ -1611,11 +1637,9 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 	int NCondNodes = 1 + NLsep + (NL - NLsep)*NCOMPS;
 	int NCondEdges = NLsep + (1 + NL - NLsep)*NCOMPS;
 	std::vector<Eigen::Triplet<double>> IncTrips;
-	Eigen::VectorXd EdgeCSA = Eigen::VectorXd::Zero(NCondEdges);
-	Eigen::VectorXd NodeVol = Eigen::VectorXd::Zero(NCondNodes);
+	this->EdgeCSA = Eigen::VectorXd::Zero(NCondEdges);
+	this->NodeVol = Eigen::VectorXd::Zero(NCondNodes);
 	IncTrips.reserve(2*NCondEdges);
-	//add in something to deal with mouth and DS volume here
-
 
 	//
 	double xh = 0;
@@ -1637,22 +1661,22 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 		{
 			IncTrips.push_back(Eigen::Triplet<double>(j,j, 1.0));
 			IncTrips.push_back(Eigen::Triplet<double>(j,j+1,-1.0));
-			EdgeCSA[j] = CSAh;
-			NodeVol[j] = Nvolh;
+			this->EdgeCSA[j] = CSAh;
+			this->NodeVol[j] = Nvolh;
 		}
 		else
 		{
 			if(j == NLsep)
 			{
 				int NodeIn = NLsep;
-				NodeVol[NodeIn] = Nvolh;
+				this->NodeVol[NodeIn] = Nvolh;
 				for(int n = 0; n < NCOMPS; n++)
 				{
 					int EdgeNo = NLsep + n;
 					int NodeOut = NLsep + n + 1;
 					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeIn,  1.0));
 					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeOut,-1.0));
-					EdgeCSA[EdgeNo] = CSAh/NCOMPS;
+					this->EdgeCSA[EdgeNo] = CSAh/NCOMPS;
 				}
 			}
 			else
@@ -1664,118 +1688,19 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 					int NodeOut = NLsep + (1 + j - NLsep)*n + 1;
 					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeIn,  1.0));
 					IncTrips.push_back(Eigen::Triplet<double>(EdgeNo, NodeOut,-1.0));
-					EdgeCSA[EdgeNo] = CSAh/NCOMPS;
-					NodeVol[NodeIn] = Nvolh/NCOMPS;
+					this->EdgeCSA[EdgeNo] = CSAh/NCOMPS;
+					this->NodeVol[NodeIn] = Nvolh/NCOMPS;
 					if(j==NL-1)
 					{
-						NodeVol[NodeOut] = Vint2;
+						this->NodeVol[NodeOut] = Vint2;
 					}
 				}
 			}
 		}
-
 		xh += dx;
 		Vint0 = Vint2;
 	}
-
-
-
-	//THIS WOULD BE USED IF RESOLVING BRANCHING, PROBABLY UNECESSARY
-	// std::vector<Eigen::Triplet<double>> IncTrips;
-	// IncTrips.reserve(2*NCondEdges)
-	// for(int j = 0; j <= CondGenMixMax; j++)
-	// {
-	// 	for(int k = 0; k < pow(2,j); k++)
-	// 	{
-	// 		//nodes numbered within generation
-	// 		int nin = pow(2,j)-1 + (k%2);  //node in
-	// 		int nout = pow(2,j+1)-1 + k;   //node out
-	// 		//edge no. is node out - 1
-	// 		IncTrips.push_back(Eigen::Triplet<double>(nout-1,nin,1.0))  
-	// 		IncTrips.push_back(Eigen::Triplet<double>(nout-1,nout,-1.0))
-	// 	}
-	// }
-	// //trumpets from here on out
-	// for(int j = CondGenMixMax+1; j <= MaxGen; j++)
-	// {
-	// 	for(int k = 0; k < pow(2,CondGenMixMax); k++)
-	// 	{
-	// 		//add another 2^CGMM for each gen after this point
-	// 		int nin = (1 + j - CondGenMixMax)*pow(2,CondGenMixMax)* - 1 + k    ;  //
-	// 		int nout
-	// 	}
-	// }
-
-
-
 	this->Incidence.setFromTriplets(IncTrips.begin(),IncTrips.end());
-	////
-
-	//SDS[0] = std::make_shared<FlexibleVolumeElement>(VDS, 0, 0);
-	//this->shared_ds = std::make_shared<DSVolume>(SDS);
-
-	////initialise model based on params
-	//this->private_ds.resize(opt.Nunits);
-	//this->units.resize(opt.Nunits);
-	//double VDperunit = VDP / ((double) opt.Nunits);
-	////build private dead-space objects
-	//for(int i = 0; i < opt.Nunits; i++)
-	//{
-	//	vector<std::shared_ptr<FlexibleVolumeElement>> PDS(1);
-	//	PDS[0] = std::make_shared<FlexibleVolumeElement>(VDperunit, 0, 0);
-	//	this->private_ds[i] = std::make_shared<DSVolume>(PDS);
-	//}
-
-	//double Vbag = (param_dict.at(FRC_PARAM_NAME))/ ((double) opt.Nunits);
-	////assign function pointers based on options
-	////ventilation dist options
-	//if(opt.vent_dist_type == LOGNORMAL_CODE) this->generate_vent_dist = &generate_vent_dist_lognormal_rand;
-	//else if(opt.vent_dist_type == BIMODAL_CODE) this->generate_vent_dist = &generate_vent_dist_bimodal_rand;
-	////lung unit options
-	//if(opt.lung_unit_type == BASIC_UNIT_CODE) this->initialise_lung_unit = &build_basic_lung_unit;
-	//else if(opt.lung_unit_type == ASYMM_UNIT_CODE) this->initialise_lung_unit = &build_asymm_lung_unit;
-
-	////generate ventilation dist
-	//vector<double> Vratios;
-	//this->generate_vent_dist(param_dict, opt.Nunits, Vratios);
-	////build lung units
-	//for(int i = 0; i < opt.Nunits; i++)
-	//{
-	//	//build based on options
-	//	this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
-	//}
-	////sync option
-	//if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
-	//else this->create_async_vent_solver(param_dict.at(DELAY_PARAM_NAME));
-	//this->washout_start_inflation.resize(this->Cinit.size());
-	//vector<double> Deltas;
-	//Deltas.resize(this->Cinit.size());
-	//double total_deltas = 0;
-	//for(size_t n = 1; n < this->Cinit.size(); n++)
-	//{
-	//	std::stringstream ss;
-	//	ss << FRC_TEST_MODIFIER_NAME << "_" << n;
-	//	Deltas[n] = param_dict.at(ss.str().c_str());
-	//	total_deltas += Deltas[n];
-	//}
-	//Deltas[0] = -total_deltas/(this->Cinit.size() + total_deltas);   
-	////by definition, mean must be 0, so first test must cancel out the rest
-	//this->washout_start_inflation[0] = Deltas[0]*param_dict.at(FRC_PARAM_NAME);
-	//for(size_t n = 1; n < this->Cinit.size(); n++)
-	//{
-	//	std::stringstream ss;
-	//	ss << FRC_TEST_MODIFIER_NAME << "_" << n;
-	//	this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
-	//}
-
-	////create mixing point
-	//double mp_vol_scale = opt.mix_vol_frac_step*(VDS + VDP);
-	////assume step is relative to DS volume
-	//this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
-	//this->params = params_h;
-	//this->NMRIPoints = opt.NMR_samples;
-	//this->simulate_washin = opt.simulate_washin;
-	//this->washout_start_timepoint = opt.washout_start_timepoint;
 }
 
 

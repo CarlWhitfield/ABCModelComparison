@@ -236,14 +236,23 @@ protected:
 	virtual void measure_values(MBWModelOutputs* output){};
 	virtual void measure_MRI_dist(MBWModelOutputs* output){};
 	virtual double get_mouth_conc(){ return 0.0; }
+	virtual void build_airway_model(const double & VD, cosnt double & VDSfrac, 
+		const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt){};
+	void (*generate_vent_dist)(const std::map<std::string,double> &, 
+							   const int &, std::vector<double> & );
+	void (*initialise_lung_unit)(std::shared_ptr<LungUnit> & unit, const double & V0, 
+						         const double & IGV0, const double & DV, 
+						         const std::map<std::string,double> & params);
 
 public:
 	inline void set_inhaled_bc(const double & c){ this->inhaled_conc = c; }
 	virtual void set_input_data(const MBWModelInputs * inputs);
 	void simulate(MBWModelOutputs* output);
 	//to be defined in derived classes
-	virtual void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
+	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
 		const std::vector<std::string> param_names_h){};
+	void create_sync_vent_solver();
+	void create_async_vent_solver(const double & delay_ts);
 };
 
 class CompartmentalModelBase: public MBWModelBase
@@ -262,21 +271,15 @@ protected:
 	void measure_values(MBWModelOutputs* output);
 	void measure_MRI_dist(MBWModelOutputs* output);
 	double get_mouth_conc();
-	void (*generate_vent_dist)(const std::map<std::string,double> &, 
-							   const int &, std::vector<double> & );
-	void (*initialise_lung_unit)(std::shared_ptr<LungUnit> & unit, const double & V0, 
-						         const double & IGV0, const double & DV, 
-						         const std::map<std::string,double> & params);
+	void build_airway_model(const double & VD, const double & VDSfrac, 
+		const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt);
 
 public:
 	CompartmentalModelBase(){};
-	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
-		                     const std::vector<std::string> param_names_h);
+	
 	double get_end_SDS_conc();
 	double get_mouth_conc_generic();
 	double get_igvol_rebreathe();
-	void create_sync_vent_solver();
-	void create_async_vent_solver(const double & delay_ts);
 };
 
 class CompartmentalModelGeneratorBase: 
