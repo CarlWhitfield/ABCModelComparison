@@ -26,9 +26,9 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 	boost::regex MBWSummaryRegex(ss.str().c_str());
 
 	std::vector<boost::filesystem::path> MBWTestPaths, MBWSummaryPaths;
-
+	boost::filesystem::path p_in(filepath.c_str()); 
 	boost::filesystem::directory_iterator it_end; //yields beyond end iterator 
-	for(boost::filesystem::directory_iterator it(filepath); it!=it_end; ++it)
+	for(boost::filesystem::directory_iterator it(p_in); it!=it_end; ++it)
 	{
 		boost::smatch result1, result2;
 		if(boost::regex_match(it->path().filename().string(), result1, MBWTestRegex)) //returns true for match
@@ -41,13 +41,40 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 		}
 	}
 	
+	//sort MBW Test Paths
+	std::vector<int> MBWTestNumbers, Indices;
+	MBWTestNumbers.resize(MBWTestPaths.size());
+	Indices.resize(MBWTestPaths.size());
+	for(size_t n = 0; n < MBWTestPaths.size(); n++)
+	{
+		std::string filehead;
+		size_t lastdot = MBWTestPaths[n].filename().string().find_last_of(".");
+		if (lastdot == std::string::npos) filehead = MBWTestPaths[n].filename().string();
+		filehead = MBWTestPaths[n].filename().string().substr(0, lastdot); 
+		std::vector<std::string> spst = string_split(filehead,"_");
+		MBWTestNumbers[n] = StringToNumber<int>(spst.back());
+		Indices[n] = n;
+	}
+	std::sort(Indices.begin(), Indices.end(),
+       [&MBWTestNumbers](size_t i1, size_t i2) {return MBWTestNumbers[i1] < MBWTestNumbers[i2];});
+	std::vector<boost::filesystem::path> MBWTestPathsNew;
+	MBWTestPathsNew.resize(MBWTestPaths.size());
+	for(size_t n = 0; n < MBWTestPaths.size(); n++)
+	{
+		MBWTestPathsNew[n] = MBWTestPaths[Indices[n]];
+	}
+	MBWTestPaths = MBWTestPathsNew;
+
 	//read test data
 	this->Ntests = int(MBWTestPaths.size());
 	this->conc_measurements.resize(this->Ntests);
-	this->measurement_steps.resize(this->Ntests);
+	this->conc_weights.resize(this->Ntests);
+	this->igvol_diff_measurements.resize(this->Ntests);
+	this->igvol_weights.resize(this->Ntests);
+	this->conc_measurement_steps.resize(this->Ntests);
+	this->igvol_measurement_steps.resize(this->Ntests);
 	this->sim_vol_steps.resize(this->Ntests);
 	this->sim_step_durations.resize(this->Ntests);
-	this->dist_weights.resize(this->Ntests);
 	this->av_vol_step = 0;
 	unsigned int i_count = 0;
 	for(int n = 0; n < this->Ntests; n++)
@@ -59,18 +86,29 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 		{
 			col_numbers[headers[ih]] = ih;
 		}
+		double old_cumul_igvol = 0, cumul_igvolh = 0;
+		double old_cumul_volTO = 0, cumul_volTO = 0;
 		for(int iline = 1; iline < int(infile.size()); iline++)
 		{
 			std::vector<std::string> line = string_split(infile[iline], ",");
-			this->sim_vol_steps[n].push_back(StringToNumber<double>(line[col_numbers.at(VOLUME_NAME)]));
+			double vol_step = StringToNumber<double>(line[col_numbers.at(VOLUME_NAME)]);
+			this->sim_vol_steps[n].push_back(vol_step);
+			cumul_volTO += abs(vol_step);
 			this->av_vol_step += abs(this->sim_vol_steps[n][iline-1]);
 			this->sim_step_durations[n].push_back(StringToNumber<double>(line[col_numbers.at(DURATION_NAME)]));
-			if(StringToNumber<int>(line[col_numbers.at(MEASURED_NAME)]))
-			{
-				this->measurement_steps[n].push_back(iline-1);
-				this->conc_measurements[n].push_back(StringToNumber<double>(line[col_numbers.at(CONC_NAME)]));
-				this->dist_weights[n].push_back(1.0);  //automatically set to 1, can re-write to include weights
-			}
+			//get conc measurements
+			this->conc_measurement_steps[n].push_back(iline-1);
+			this->conc_measurements[n].push_back(StringToNumber<double>(line[col_numbers.at(CONC_NAME)]));
+			if(USE_SF6_CONC) this->conc_weights[n].push_back(StringToNumber<double>(line[col_numbers.at(CONC_MEASURED_NAME)]));
+			else this->conc_weights[n].push_back(0.0);
+			//get igvol diff measurements
+			this->igvol_measurement_steps[n].push_back(iline-1);
+			cumul_igvolh = StringToNumber<double>(line[col_numbers.at(IGVOL_NAME)]);
+			this->igvol_diff_measurements[n].push_back((cumul_igvolh - old_cumul_igvol));
+			old_cumul_igvol = cumul_igvolh;
+			old_cumul_volTO = cumul_volTO;
+			if(USE_SF6_VOL) this->igvol_weights[n].push_back(StringToNumber<double>(line[col_numbers.at(IGVOL_MEASURED_NAME)]));
+			else this->igvol_weights[n].push_back(0.0);
 		}
 		i_count += this->sim_vol_steps[n].size();
 	}
@@ -98,9 +136,10 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 	this->FRC0 = StringToNumber<double>(topline[col_numbers.at(FRC_NAME)]);
 	this->machine_ds = StringToNumber<double>(topline[col_numbers.at(MACHINE_DS_NAME)]);
 	this->dead_space = StringToNumber<double>(topline[col_numbers.at(FDS_NAME)]);
+	this->rebreathe_vol = StringToNumber<double>(topline[col_numbers.at(REBREATHE_VOL_NAME)]);
 	this->MRI_vbag = StringToNumber<double>(topline[col_numbers.at(VBAG_NAME)]);
 	//our definition of FRC in this model excludes dead space
-	this->FRC0 -= this->dead_space;
+	this->FRC0 -= this->dead_space;   //IMPORTANT
 
 	//get cinit vals
 	this->Cinit.resize(this->Ntests);
@@ -129,6 +168,10 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 	{
 		this->measured.insert(this->measured.end(),this->conc_measurements[it].begin(), 
 			                                       this->conc_measurements[it].end());
+		this->dist_weights.insert(this->dist_weights.end(), this->conc_weights[it].begin(), this->conc_weights[it].end());
+		this->measured.insert(this->measured.end(),this->igvol_diff_measurements[it].begin(), 
+			                                       this->igvol_diff_measurements[it].end());
+		this->dist_weights.insert(this->dist_weights.end(), this->igvol_weights[it].begin(), this->igvol_weights[it].end());
 	}
 }
 
@@ -146,110 +189,128 @@ void MBWModelInputs::generate_inputs(const std::string & params_file, MBWModelOp
 	//FRC, VD, VD_shared_fraction, 
 
 	//this could be a read options & params function
-	std::shared_ptr<MBWOptionList> options = std::make_shared<MBWOptionList>();
-	std::shared_ptr<MBWParameterList> params = std::make_shared<MBWParameterList>();
+	//this->Ntests=3;
+	//std::shared_ptr<MBWOptionList> options = std::make_shared<MBWOptionList>();
+	//std::shared_ptr<MBWParameterList> params = std::make_shared<MBWParameterList>();
+	//params->add_start_inflation_params(this->Ntests);
 
-	std::vector<std::string> infile = get_all_lines(params_file);
-	for(unsigned int i = 0; i < infile.size(); i++)
-	{
-		std::vector<std::string> line = string_split(infile[i]," ");
-		
-		if (!(options->parse(line[0],line[1]))) 
-		{
-			if(!(params->parse(line[0],line[1])))
-			{
-				std::cerr << "Error, did not recognise option " << line[0] << "\n";
-			}
-		}
-	}
-	params->check_validity(options.get());
-	//now use these to create input file
+	//std::vector<std::string> infile = get_all_lines(params_file);
+	//for(unsigned int i = 0; i < infile.size(); i++)
+	//{
+	//	std::vector<std::string> line = string_split(infile[i]," ");
+	//	if(line.size() > 1)
+	//	{
+	//		if (!(options->parse(line[0],line[1]))) 
+	//		{
+	//			if(!(params->parse(line[0],line[1])))
+	//			{
+	//				std::cerr << "Error, did not recognise option " << line[0] << std::endl;
+	//			}
+	//		}
+	//	}
+	//}
+	//params->check_validity(options.get());
+	////now use these to create input file
 
-	//generate flux -- can be moved to another function
-	//first generate breath sizes
-	double bp = params->get_param<double>(BPERIOD_PARAM_NAME)->get_value();
-	double vt = params->get_param<double>(VT_PARAM_NAME)->get_value();
-	double dvt = params->get_param<double>(VTFRANGE_PARAM_NAME)->get_value();
+	////generate flux -- can be moved to another function
+	////first generate breath sizes
+	//double bp = params->get_param<double>(BPERIOD_PARAM_NAME)->get_value();
+	//double vt = params->get_param<double>(VT_PARAM_NAME)->get_value();
+	//double dvt = params->get_param<double>(VTFRANGE_PARAM_NAME)->get_value();
 
-	int Nwashin = MBW_BMAX;
-	int Nwashin_steps = int(Nwashin*bp*100);
-	int Nwashout = MBW_BMAX;
-	int Nwashout_steps = int(Nwashout*bp*100);
-	this->Ntests=3;
-	boost::random::uniform_01<double> u01;
-	for(int n = 0; n < this->Ntests; n++)
-	{
-		std::vector<double> breath_vols(Nwashin+Nwashout, 0.0);
-		for(int j = 0; j < Nwashin; j++)
-		{
-			breath_vols[j] = 2.0*(vt + 2*dvt*(u01(*(rng.get())) - 0.5)); 
-			//washin breath size is double
-		}
-		for(int j = Nwashin; j < Nwashin + Nwashout; j++)
-		{
-			breath_vols[j] = vt + 2*dvt*(u01(*(rng.get())) - 0.5);
-		}
-		this->sim_step_durations.push_back(std::vector<double>(Nwashin_steps+Nwashout_steps, 0.01));
-		this->sim_vol_steps.push_back(std::vector<double>(Nwashin_steps+Nwashout_steps, 0.0));
-		this->measurement_steps.push_back(std::vector<int>(Nwashin_steps+Nwashout_steps, 0));
-		for(int i = 0; i < Nwashin_steps+Nwashout_steps; i++)
-		{
-			int nb = int(i*0.01/bp);
-			if(i*0.01/bp - nb < 0.5) //inhale
-			{
-				this->sim_vol_steps[n][i] = 0.01*breath_vols[nb]/(0.5*bp);
-			}
-			else //exhale
-			{
-				this->sim_vol_steps[n][i] = -0.01*breath_vols[nb]/(0.5*bp);
-			}
-			this->measurement_steps[n][i] = i;
-		}
-		this->Cinit.push_back(0.2);  //in %
-		this->Cinit_std.push_back(SF6_NOISE);
-	}
-	this->machine_ds = params->get_param<double>(MACHINE_DS_PARAM_NAME)->get_value();
-	this->av_vol_step = 2*0.01*vt/bp;
-	//create and return options file
-	opts.lung_unit_type = options->get_option<char>(LUNG_UNIT_KEY)->get_value();
-	opts.vent_dist_type = options->get_option<char>(VDIST_KEY)->get_value();
-	opts.NMR_samples = NMRI_SAMPLES;            //could be user inputted
-	opts.Nunits = NCOMPS;                       //could be user inputted
-	opts.mix_vol_frac_step = NMV_FRAC_STEP;     //could be user inputted
-	opts.simulate_washin = true;
-	opts.washout_start_timepoint = Nwashin_steps;
+	//int Nwashin = MBW_BMAX;
+	//int Nwashin_steps = int(Nwashin*bp*100);
+	//int Nwashout = MBW_BMAX;
+	//int Nwashout_steps = int(Nwashout*bp*100);
+	//
+	//boost::random::uniform_01<double> u01;
+	//for(int n = 0; n < this->Ntests; n++)
+	//{
+	//	std::vector<double> breath_vols(Nwashin+Nwashout, 0.0);
+	//	for(int j = 0; j < Nwashin; j++)
+	//	{
+	//		breath_vols[j] = 2.0*(vt + 2*dvt*(u01(*(rng.get())) - 0.5)); 
+	//		//washin breath size is double
+	//	}
+	//	for(int j = Nwashin; j < Nwashin + Nwashout; j++)
+	//	{
+	//		breath_vols[j] = vt + 2*dvt*(u01(*(rng.get())) - 0.5);
+	//	}
+	//	this->sim_step_durations.push_back(std::vector<double>(Nwashin_steps+Nwashout_steps, 0.01));
+	//	this->sim_vol_steps.push_back(std::vector<double>(Nwashin_steps+Nwashout_steps, 0.0));
+	//	this->measurement_steps.push_back(std::vector<int>(Nwashin_steps+Nwashout_steps, 0));
+	//	for(int i = 0; i < Nwashin_steps+Nwashout_steps; i++)
+	//	{
+	//		int nb = int(i*0.01/bp);
+	//		if(i*0.01/bp - nb < 0.5) //inhale
+	//		{
+	//			this->sim_vol_steps[n][i] = 0.01*breath_vols[nb]/(0.5*bp);
+	//		}
+	//		else //exhale
+	//		{
+	//			this->sim_vol_steps[n][i] = -0.01*breath_vols[nb]/(0.5*bp);
+	//		}
+	//		this->measurement_steps[n][i] = i;
+	//	}
+	//	this->Cinit.push_back(0.2);  //in %
+	//	this->Cinit_std.push_back(SF6_NOISE);
+	//}
+	//this->machine_ds = params->get_param<double>(MACHINE_DS_PARAM_NAME)->get_value();
+	//this->av_vol_step = 2*0.01*vt/bp;
+	////create and return options file
+	//opts.lung_unit_type = options->get_option<char>(LUNG_UNIT_KEY)->get_value();
+	//opts.vent_dist_type = options->get_option<char>(VDIST_KEY)->get_value();
+	//opts.breath_model_type = options->get_option<char>(BREATHING_MODEL_KEY)->get_value();
+	//opts.NMR_samples = NMRI_SAMPLES;            //could be user inputted
+	//opts.Nunits = NCOMPS;                       //could be user inputted
+	//opts.mix_vol_frac_step = NMV_FRAC_STEP;     //could be user inputted
+	//opts.simulate_washin = true;
+	//opts.washout_start_timepoint = Nwashin_steps;
 
 
-	//create params for MBW model
-	MBWModelParams.push_back(params->get_param<double>(FRC_PARAM_NAME)->get_value());
-	MBWModelParamNames.push_back(FRC_PARAM_NAME);
-	MBWModelParams.push_back(params->get_param<double>(VD_PARAM_NAME)->get_value());
-	MBWModelParamNames.push_back(VD_PARAM_NAME);
-	MBWModelParams.push_back(params->get_param<double>(SIGMA_PARAM_NAME)->get_value());
-	MBWModelParamNames.push_back(SIGMA_PARAM_NAME);
-	bool SDS = (params->get_param<double>(VDSFRAC_PARAM_NAME)->get_value() > 0);
-	if(SDS)
-	{
-		MBWModelParams.push_back(params->get_param<double>(VDSFRAC_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(VDSFRAC_PARAM_NAME);
-	}
-	if(opts.vent_dist_type == BIMODAL_CODE)
-	{
-		MBWModelParams.push_back(params->get_param<double>(MURATIO_LS_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(MURATIO_LS_PARAM_NAME);
-		MBWModelParams.push_back(params->get_param<double>(SIGRATIO_LS_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(SIGRATIO_LS_PARAM_NAME);
-		MBWModelParams.push_back(params->get_param<double>(VFASTFRAC_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(VFASTFRAC_PARAM_NAME);
-	}
-	if(opts.lung_unit_type == ASYMM_UNIT_CODE)
-	{
-		MBWModelParams.push_back(params->get_param<double>(ASYMM_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(ASYMM_PARAM_NAME);
-		MBWModelParams.push_back(params->get_param<double>(DIFFSCALE_PARAM_NAME)->get_value());
-		MBWModelParamNames.push_back(DIFFSCALE_PARAM_NAME);
-	}
-	//add in asymm unit params here
+	////create params for MBW model
+	//for(int n = 1; n < this->Ntests; n++)
+	//{
+	//	std::stringstream ss;
+	//	ss << FRC_TEST_MODIFIER_NAME << '_' << n;
+	//	std::string pname = ss.str().c_str();
+	//	MBWModelParams.push_back(params->get_param<double>(pname)->get_value());
+	//	MBWModelParamNames.push_back(pname);
+	//}
+
+	//MBWModelParams.push_back(params->get_param<double>(FRC_PARAM_NAME)->get_value());
+	//MBWModelParamNames.push_back(FRC_PARAM_NAME);
+	//MBWModelParams.push_back(params->get_param<double>(VD_PARAM_NAME)->get_value());
+	//MBWModelParamNames.push_back(VD_PARAM_NAME);
+	//MBWModelParams.push_back(params->get_param<double>(SIGMA_PARAM_NAME)->get_value());
+	//MBWModelParamNames.push_back(SIGMA_PARAM_NAME);
+	//bool SDS = (params->get_param<double>(VDSFRAC_PARAM_NAME)->get_value() > 0);
+	//if(SDS)
+	//{
+	//	MBWModelParams.push_back(params->get_param<double>(VDSFRAC_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(VDSFRAC_PARAM_NAME);
+	//}
+	//if(opts.vent_dist_type == BIMODAL_CODE)
+	//{
+	//	MBWModelParams.push_back(params->get_param<double>(MURATIO_LS_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(MURATIO_LS_PARAM_NAME);
+	//	MBWModelParams.push_back(params->get_param<double>(SIGRATIO_LS_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(SIGRATIO_LS_PARAM_NAME);
+	//	MBWModelParams.push_back(params->get_param<double>(VFASTFRAC_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(VFASTFRAC_PARAM_NAME);
+	//}
+	//if(opts.lung_unit_type == ASYMM_UNIT_CODE)
+	//{
+	//	MBWModelParams.push_back(params->get_param<double>(ASYMM_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(ASYMM_PARAM_NAME);
+	//	MBWModelParams.push_back(params->get_param<double>(DIFFSCALE_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(DIFFSCALE_PARAM_NAME);
+	//}
+	//if(opts.breath_model_type == ASYNC_MODEL_CODE)
+	//{
+	//	MBWModelParams.push_back(params->get_param<double>(DELAY_PARAM_NAME)->get_value());
+	//	MBWModelParamNames.push_back(DELAY_PARAM_NAME);
+	//}
 }
 
 bool MBWModelOutputs::extra_outputs() const
@@ -397,23 +458,41 @@ double CompartmentalModelGeneratorBase::prior_density(const std::vector<double> 
 	return 1.0;
 }
 
+void CompartmentalModelGeneratorBase::initialise_FRC_modifier_params(MBWModelInputs* inputs)
+{
+	size_t Ntests = inputs->Cinit.size();
+	this->param_names.resize(Ntests-1);
+	this->param_min.resize(Ntests-1);
+	this->param_max.resize(Ntests-1);
+
+	for(size_t n = 1; n < Ntests; n++)
+	{
+		std::stringstream ss;
+		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+		this->param_names[n-1] = ss.str().c_str();
+		this->param_min[n-1] = FRC_TEST_MODIFIER_MIN;
+		this->param_max[n-1] = FRC_TEST_MODIFIER_MAX;
+	}
+	this->N_FRC_mod_params = Ntests-1;
+}
+
 void BasicLognormalModelGenerator::initialise_params()
 {
-	this->param_names.resize(3);
-	this->param_min.resize(3);
-	this->param_max.resize(3);
+	this->param_names.resize(this->N_FRC_mod_params+3);
+	this->param_min.resize(this->N_FRC_mod_params+3);
+	this->param_max.resize(this->N_FRC_mod_params+3);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
 }
 
 void BasicLognormalModelGenerator::set_model_name()
@@ -429,6 +508,7 @@ void CompartmentalModelGeneratorBase::generate_model(const std::vector<double> &
 	MBWModelOptions opts;
 	opts.vent_dist_type = LOGNORMAL_CODE;
 	opts.lung_unit_type = BASIC_UNIT_CODE;
+	opts.breath_model_type = SYNC_MODEL_CODE;
 	m->build_model(opts, params, this->param_names);
 }
 
@@ -439,24 +519,24 @@ void LognormalModelSDSGenerator::set_model_name()
 
 void LognormalModelSDSGenerator::initialise_params()
 {
-	this->param_names.resize(4);
-	this->param_min.resize(4);
-	this->param_max.resize(4);
+	this->param_names.resize(this->N_FRC_mod_params+4);
+	this->param_min.resize(this->N_FRC_mod_params+4);
+	this->param_max.resize(this->N_FRC_mod_params+4);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
-	this->param_names[3] = VDSFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = VDSFRAC_PARAM_NAME;
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
-	this->param_min[3] = 0;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
-	this->param_max[3] = 1;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = 1;
 }
 
 void BimodalModelSDSGenerator::set_model_name()
@@ -466,34 +546,34 @@ void BimodalModelSDSGenerator::set_model_name()
 
 void BimodalModelSDSGenerator::initialise_params()
 {
-	this->param_names.resize(7);
-	this->param_min.resize(7);
-	this->param_max.resize(7);
+	this->param_names.resize(this->N_FRC_mod_params+7);
+	this->param_min.resize(this->N_FRC_mod_params+7);
+	this->param_max.resize(this->N_FRC_mod_params+7);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
-	this->param_names[3] = VDSFRAC_PARAM_NAME;
-	this->param_names[4] = MURATIO_LS_PARAM_NAME;
-	this->param_names[5] = SIGRATIO_LS_PARAM_NAME;
-	this->param_names[6] = VFASTFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = VDSFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+4] = MURATIO_LS_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+5] = SIGRATIO_LS_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+6] = VFASTFRAC_PARAM_NAME;
 
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
-	this->param_min[3] = 0;
-	this->param_min[4] = 1.0;   //ratio of large to small, cannot be < 1
-	this->param_min[5] = 1.0/SIGRATIO_MAX;
-	this->param_min[6] = 0.0;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0;
+	this->param_min[this->N_FRC_mod_params+4] = 1.0;   //ratio of large to small, cannot be < 1
+	this->param_min[this->N_FRC_mod_params+5] = 1.0/SIGRATIO_MAX;
+	this->param_min[this->N_FRC_mod_params+6] = 0.0;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
-	this->param_max[3] = 1;
-	this->param_max[4] = MURATIO_MAX;   //ratio of large to small, cannot be < 1
-	this->param_max[5] = SIGRATIO_MAX;
-	this->param_max[6] = 1.0;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = 1;
+	this->param_max[this->N_FRC_mod_params+4] = MURATIO_MAX;   //ratio of large to small, cannot be < 1
+	this->param_max[this->N_FRC_mod_params+5] = SIGRATIO_MAX;
+	this->param_max[this->N_FRC_mod_params+6] = 1.0;
 }
 
 void BimodalModelSDSGenerator::generate_model(const std::vector<double> & params,
@@ -504,6 +584,7 @@ void BimodalModelSDSGenerator::generate_model(const std::vector<double> & params
 	MBWModelOptions opts;
 	opts.vent_dist_type = BIMODAL_CODE;
 	opts.lung_unit_type = BASIC_UNIT_CODE;
+	opts.breath_model_type = SYNC_MODEL_CODE;
 	m->build_model(opts, params, this->param_names);
 }
 
@@ -514,30 +595,30 @@ void LognormalAsymmSDSModelGenerator::set_model_name()
 
 void LognormalAsymmSDSModelGenerator::initialise_params()
 {
-	this->param_names.resize(6);
-	this->param_min.resize(6);
-	this->param_max.resize(6);
+	this->param_names.resize(this->N_FRC_mod_params+6);
+	this->param_min.resize(this->N_FRC_mod_params+6);
+	this->param_max.resize(this->N_FRC_mod_params+6);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
-	this->param_names[3] = VDSFRAC_PARAM_NAME;
-	this->param_names[4] = ASYMM_PARAM_NAME;
-	this->param_names[5] = DIFFSCALE_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = VDSFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+4] = ASYMM_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+5] = DIFFSCALE_PARAM_NAME;
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
-	this->param_min[3] = 0;
-	this->param_min[4] = 0.0;
-	this->param_min[5] = DIFFSCALE_MIN;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0;
+	this->param_min[this->N_FRC_mod_params+4] = 0.0;
+	this->param_min[this->N_FRC_mod_params+5] = DIFFSCALE_MIN;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
-	this->param_max[3] = 1;
-	this->param_max[4] = 1.0;
-	this->param_max[5] = DIFFSCALE_MAX;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = 1;
+	this->param_max[this->N_FRC_mod_params+4] = 1.0;
+	this->param_max[this->N_FRC_mod_params+5] = DIFFSCALE_MAX;
 }
 
 void LognormalAsymmSDSModelGenerator::generate_model(const std::vector<double> & params,
@@ -548,6 +629,7 @@ void LognormalAsymmSDSModelGenerator::generate_model(const std::vector<double> &
 	MBWModelOptions opts;
 	opts.vent_dist_type = LOGNORMAL_CODE;
 	opts.lung_unit_type = ASYMM_UNIT_CODE;
+	opts.breath_model_type = SYNC_MODEL_CODE;
 	m->build_model(opts, params, this->param_names);
 }
 
@@ -558,27 +640,27 @@ void BasicLognormalAsymmModelGenerator::set_model_name()
 
 void BasicLognormalAsymmModelGenerator::initialise_params()
 {
-	this->param_names.resize(5);
-	this->param_min.resize(5);
-	this->param_max.resize(5);
+	this->param_names.resize(this->N_FRC_mod_params+5);
+	this->param_min.resize(this->N_FRC_mod_params+5);
+	this->param_max.resize(this->N_FRC_mod_params+5);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
-	this->param_names[3] = ASYMM_PARAM_NAME;
-	this->param_names[4] = DIFFSCALE_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = ASYMM_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+4] = DIFFSCALE_PARAM_NAME;
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
-	this->param_min[3] = 0.0;
-	this->param_min[4] = DIFFSCALE_MIN;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0.0;
+	this->param_min[this->N_FRC_mod_params+4] = DIFFSCALE_MIN;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
-	this->param_max[3] = 1.0;
-	this->param_max[4] = DIFFSCALE_MAX;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = 1.0;
+	this->param_max[this->N_FRC_mod_params+4] = DIFFSCALE_MAX;
 }
 
 void BasicLognormalAsymmModelGenerator::generate_model(const std::vector<double> & params,
@@ -589,6 +671,7 @@ void BasicLognormalAsymmModelGenerator::generate_model(const std::vector<double>
 	MBWModelOptions opts;
 	opts.vent_dist_type = LOGNORMAL_CODE;
 	opts.lung_unit_type = ASYMM_UNIT_CODE;
+	opts.breath_model_type = SYNC_MODEL_CODE;
 	m->build_model(opts, params, this->param_names);
 }
 
@@ -599,39 +682,39 @@ void BimodalAsymmSDSModelGenerator::set_model_name()
 
 void BimodalAsymmSDSModelGenerator::initialise_params()
 {
-	this->param_names.resize(9);
-	this->param_min.resize(9);
-	this->param_max.resize(9);
+	this->param_names.resize(this->N_FRC_mod_params+9);
+	this->param_min.resize(this->N_FRC_mod_params+9);
+	this->param_max.resize(this->N_FRC_mod_params+9);
 
-	this->param_names[0] = FRC_PARAM_NAME;
-	this->param_names[1] = VD_PARAM_NAME;
-	this->param_names[2] = SIGMA_PARAM_NAME;
-	this->param_names[3] = VDSFRAC_PARAM_NAME;
-	this->param_names[4] = MURATIO_LS_PARAM_NAME;
-	this->param_names[5] = SIGRATIO_LS_PARAM_NAME;
-	this->param_names[6] = VFASTFRAC_PARAM_NAME;
-	this->param_names[7] = ASYMM_PARAM_NAME;
-	this->param_names[8] = DIFFSCALE_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = VDSFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+4] = MURATIO_LS_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+5] = SIGRATIO_LS_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+6] = VFASTFRAC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+7] = ASYMM_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+8] = DIFFSCALE_PARAM_NAME;
 
-	this->param_min[0] = FRC_MIN_FRAC*inputs->FRC0;
-	this->param_min[1] = VD_MIN_FRAC*inputs->dead_space;
-	this->param_min[2] = SIGMA_MIN;
-	this->param_min[3] = 0;
-	this->param_min[4] = 1.0;   //ratio of large to small, cannot be < 1
-	this->param_min[5] = 1.0/SIGRATIO_MAX;
-	this->param_min[6] = 0.0;
-	this->param_min[7] = 0.0;
-	this->param_min[8] = DIFFSCALE_MIN;
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0;
+	this->param_min[this->N_FRC_mod_params+4] = 1.0;   //ratio of large to small, cannot be < 1
+	this->param_min[this->N_FRC_mod_params+5] = 1.0/SIGRATIO_MAX;
+	this->param_min[this->N_FRC_mod_params+6] = 0.0;
+	this->param_min[this->N_FRC_mod_params+7] = 0.0;
+	this->param_min[this->N_FRC_mod_params+8] = DIFFSCALE_MIN;
 
-	this->param_max[0] = FRC_MAX_FRAC*inputs->FRC0;
-	this->param_max[1] = VD_MAX_FRAC*inputs->dead_space;
-	this->param_max[2] = SIGMA_MAX;
-	this->param_max[3] = 1;
-	this->param_max[4] = MURATIO_MAX;   //ratio of large to small, cannot be < 1
-	this->param_max[5] = SIGRATIO_MAX;
-	this->param_max[6] = 1.0;
-	this->param_max[7] = 1.0;
-	this->param_max[8] = DIFFSCALE_MAX;
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = 1;
+	this->param_max[this->N_FRC_mod_params+4] = MURATIO_MAX;   //ratio of large to small, cannot be < 1
+	this->param_max[this->N_FRC_mod_params+5] = SIGRATIO_MAX;
+	this->param_max[this->N_FRC_mod_params+6] = 1.0;
+	this->param_max[this->N_FRC_mod_params+7] = 1.0;
+	this->param_max[this->N_FRC_mod_params+8] = DIFFSCALE_MAX;
 }
 
 void BimodalAsymmSDSModelGenerator::generate_model(const std::vector<double> & params,
@@ -642,19 +725,61 @@ void BimodalAsymmSDSModelGenerator::generate_model(const std::vector<double> & p
 	MBWModelOptions opts;
 	opts.vent_dist_type = BIMODAL_CODE;
 	opts.lung_unit_type = ASYMM_UNIT_CODE;
+	opts.breath_model_type = SYNC_MODEL_CODE;
 	m->build_model(opts, params, this->param_names);
 }
 
-void CompartmentalModelBase::set_input_data(const MBWModelInputs * inputs)
+void BasicLognormalAsyncModelGenerator::set_model_name()
+{
+	model_name = "Basic_lognormal_async";
+}
+
+void BasicLognormalAsyncModelGenerator::initialise_params()
+{
+	this->param_names.resize(this->N_FRC_mod_params+4);
+	this->param_min.resize(this->N_FRC_mod_params+4);
+	this->param_max.resize(this->N_FRC_mod_params+4);
+
+	this->param_names[this->N_FRC_mod_params+0] = FRC_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+1] = VD_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+2] = SIGMA_PARAM_NAME;
+	this->param_names[this->N_FRC_mod_params+3] = DELAY_PARAM_NAME;
+
+	this->param_min[this->N_FRC_mod_params+0] = FRC_MIN_FRAC*inputs->FRC0;
+	this->param_min[this->N_FRC_mod_params+1] = VD_MIN_FRAC*inputs->dead_space;
+	this->param_min[this->N_FRC_mod_params+2] = SIGMA_MIN;
+	this->param_min[this->N_FRC_mod_params+3] = 0;
+
+	this->param_max[this->N_FRC_mod_params+0] = FRC_MAX_FRAC*inputs->FRC0;
+	this->param_max[this->N_FRC_mod_params+1] = VD_MAX_FRAC*inputs->dead_space;
+	this->param_max[this->N_FRC_mod_params+2] = SIGMA_MAX;
+	this->param_max[this->N_FRC_mod_params+3] = DELAY_MAX_SECS;
+}
+
+void BasicLognormalAsyncModelGenerator::generate_model(const std::vector<double> & params, 
+		                std::shared_ptr<CompartmentalModelBase> & m) const
+{
+	m = std::make_shared<CompartmentalModelBase>();
+	m->set_input_data(inputs);
+	MBWModelOptions opts;
+	opts.vent_dist_type = LOGNORMAL_CODE;
+	opts.lung_unit_type = BASIC_UNIT_CODE;
+	opts.breath_model_type = ASYNC_MODEL_CODE;
+	m->build_model(opts, params, this->param_names);
+}
+
+void MBWModelBase::set_input_data(const MBWModelInputs * inputs)
 {
 	//pointers to constant quantities first (no need to copy locally)
 	this->sim_step_durations = &(inputs->sim_step_durations);
-	this->measurement_steps = &(inputs->measurement_steps);
+	this->conc_measurement_steps = &(inputs->conc_measurement_steps);
+	this->igvol_measurement_steps = &(inputs->igvol_measurement_steps);
 
 
 	boost::random::normal_distribution<> volndist(0.0, VOL_NOISE*inputs->av_vol_step);  //fractional noise
 	this->Cinit.resize(inputs->Ntests);
 	this->sim_vol_steps.resize(inputs->Ntests);
+	this->sim_volTO_cumul.resize(inputs->Ntests);
 	for(int it = 0; it < inputs->Ntests; it++)
 	{
 		//perturb Cinit
@@ -662,13 +787,91 @@ void CompartmentalModelBase::set_input_data(const MBWModelInputs * inputs)
 		this->Cinit[it] = inputs->Cinit[it] + Cinitndist(*(rng.get()));
 		//perturb vol steps
 		this->sim_vol_steps[it].resize(inputs->sim_vol_steps[it].size());
+		this->sim_volTO_cumul[it].resize(inputs->sim_vol_steps[it].size());
+		double last_volTO = 0;
 		for(int is = 0; is < int(inputs->sim_vol_steps[it].size()); is++)
 		{
 			this->sim_vol_steps[it][is] = inputs->sim_vol_steps[it][is] + volndist(*(rng.get()));
+			this->sim_volTO_cumul[it][is] = last_volTO + abs(this->sim_vol_steps[it][is]);
+			last_volTO = this->sim_volTO_cumul[it][is];
 		}
 	}
-	this->mouth_point = inputs->machine_ds;
+	this->mouth_point = inputs->rebreathe_vol;
+	this->conc_measurement_point = inputs->rebreathe_vol - inputs->machine_ds; 
 	this->MRI_bag_vol = inputs->MRI_vbag;
+}
+
+void MBWModelBase::run_washout_model(MBWModelOutputs* output)
+{
+	this->sim_conc.resize(this->sim_vol_steps.size());
+	this->sim_igvol_cumul.resize(this->sim_vol_steps.size());
+	for(size_t n = 0; n < this->sim_vol_steps.size(); n++) //loop over MBW tests
+	{
+		int npts = this->sim_vol_steps[n].size();
+		this->sim_conc[n].resize(npts);
+		this->sim_igvol_cumul[n].resize(npts);
+		if(this->simulate_washin)
+		{
+			this->reset_model(0.0, this->washout_start_inflation[n]);
+		}
+		else
+		{
+			this->reset_model(this->Cinit[n], this->washout_start_inflation[n]);
+		}
+		for(int t = 0; t < npts; t++)    //loop over time points to simulate
+		{
+			/*if(t==0 || this->sim_vol_steps[n][t] *this->sim_vol_steps[n][t-1] < 0)
+			{
+				this->reassign_vent_ratios();
+			}*/
+			if(this->sim_vol_steps[n][t] > 0) //inhalation
+			{
+				if(t >= this->washout_start_timepoint)
+				{
+					this->set_inhaled_bc(0);   //concentration at mouth on inhalation
+				}
+				else
+				{
+					this->set_inhaled_bc(this->Cinit[n]);   //concentration at mouth on inhalation
+				}
+			}
+			this->sim_igvol_cumul[n][t] = this->breath_step(this->sim_vol_steps[n][t], this->sim_step_durations->at(n)[t]);
+			if(t > 0) this->sim_igvol_cumul[n][t] += this->sim_igvol_cumul[n][t-1];
+			this->sim_conc[n][t] = this->get_mouth_conc();
+		}
+	}	
+	this->measure_values(output);
+}
+
+void MBWModelBase::run_MRI_model(MBWModelOutputs* output)
+{
+	this->reset_model(0);   //sets all concs to zero
+	this->set_inhaled_bc(1.0);
+	this->breath_step(this->MRI_bag_vol, 5.0);
+	this->measure_MRI_dist(output);
+}
+
+void MBWModelBase::simulate(MBWModelOutputs* output)
+{
+	//run simulation
+	//auto start = chrono::system_clock::now();
+
+	//run MBW
+	this->run_washout_model(output);
+	//run MRI measurement
+	this->run_MRI_model(output);
+}
+
+double CompartmentalModelBase::get_mouth_conc()
+{
+	if(this->use_mouth_conc_generic)
+	{
+		return this->get_mouth_conc_generic();
+	}
+	else
+	{
+		return this->get_end_SDS_conc();
+	}
 }
 
 void CompartmentalModelBase::build_model(const MBWModelOptions & opt,
@@ -689,11 +892,11 @@ void CompartmentalModelBase::build_model(const MBWModelOptions & opt,
 	{
 		VDS += param_dict.at(VDSFRAC_PARAM_NAME)*param_dict.at(VD_PARAM_NAME);
 		VDP -= param_dict.at(VDSFRAC_PARAM_NAME)*param_dict.at(VD_PARAM_NAME);
-		this->get_mouth_conc = &CompartmentalModelBase::get_mouth_conc_generic;
+		this->use_mouth_conc_generic = true;
 	}
 	else
 	{
-		this->get_mouth_conc = &CompartmentalModelBase::get_end_SDS_conc;
+		this->use_mouth_conc_generic = false;
 	}
 
 	SDS[0] = std::make_shared<FlexibleVolumeElement>(VDS, 0, 0);
@@ -729,98 +932,77 @@ void CompartmentalModelBase::build_model(const MBWModelOptions & opt,
 		//build based on options
 		this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
 	}
+	//sync option
+	if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
+	else this->create_async_vent_solver(param_dict.at(DELAY_PARAM_NAME));
+	this->washout_start_inflation.resize(this->Cinit.size());
+	vector<double> Deltas;
+	Deltas.resize(this->Cinit.size());
+	double total_deltas = 0;
+	for(size_t n = 1; n < this->Cinit.size(); n++)
+	{
+		std::stringstream ss;
+		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+		Deltas[n] = param_dict.at(ss.str().c_str());
+		total_deltas += Deltas[n];
+	}
+	Deltas[0] = -total_deltas/(this->Cinit.size() + total_deltas);   
+	//by definition, mean must be 0, so first test must cancel out the rest
+	this->washout_start_inflation[0] = Deltas[0]*param_dict.at(FRC_PARAM_NAME);
+	for(size_t n = 1; n < this->Cinit.size(); n++)
+	{
+		std::stringstream ss;
+		ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+		this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
+	}
+
 	//create mixing point
 	double mp_vol_scale = opt.mix_vol_frac_step*(VDS + VDP);
 	//assume step is relative to DS volume
 	this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
 	this->params = params_h;
 	this->NMRIPoints = opt.NMR_samples;
-	this->washout_start_inflation = opt.washout_start_inflation;
-	this->washout_start_inflation_duration = opt.washout_start_inflation_duration;
 	this->simulate_washin = opt.simulate_washin;
 	this->washout_start_timepoint = opt.washout_start_timepoint;
-}
-
-void CompartmentalModelBase::simulate(MBWModelOutputs* output)
-{
-	//run simulation
-	//auto start = chrono::system_clock::now();
-
-	//run MBW
-	this->run_washout_model(output);
-	//run MRI measurement
-	this->run_MRI_model(output);
-}
-
-void CompartmentalModelBase::run_washout_model(MBWModelOutputs* output)
-{
-	this->sim_conc.resize(this->sim_vol_steps.size());
-	for(size_t n = 0; n < this->sim_vol_steps.size(); n++) //loop over MBW tests
-	{
-		int npts = this->sim_vol_steps[n].size();
-		this->sim_conc[n].resize(npts);
-		if(this->simulate_washin)
-		{
-			this->reset_model(0.0, this->washout_start_inflation,
-			              this->washout_start_inflation_duration);
-		}
-		else
-		{
-			this->reset_model(this->Cinit[n], this->washout_start_inflation,
-			              this->washout_start_inflation_duration);
-		}
-		for(int t = 0; t < npts; t++)    //loop over time points to simulate
-		{
-			/*if(t==0 || this->sim_vol_steps[n][t] *this->sim_vol_steps[n][t-1] < 0)
-			{
-				this->reassign_vent_ratios();
-			}*/
-			if(this->sim_vol_steps[n][t] > 0) //inhalation
-			{
-				if(t >= this->washout_start_timepoint)
-				{
-					this->set_inhaled_bc(0);   //concentration at mouth on inhalation
-				}
-				else
-				{
-					this->set_inhaled_bc(this->Cinit[n]);   //concentration at mouth on inhalation
-				}
-			}
-			this->breath_step(this->sim_vol_steps[n][t], this->sim_step_durations->at(n)[t]);
-			this->sim_conc[n][t] = (this->*get_mouth_conc)();
-		}
-	}	
-	this->measure_values(output);
 }
 
 void CompartmentalModelBase::measure_values(MBWModelOutputs* output)
 {
 	//count total number of data points
-	int tot_measurement_points = 0;
-	for(size_t n = 0; n < this->measurement_steps->size(); n++)
+	int n_conc_measurement_points = 0, n_igvol_measurement_points = 0,
+		tot_measurement_points = 0;
+	for(size_t n = 0; n < this->conc_measurement_steps->size(); n++)
 	{
-		tot_measurement_points += int(this->measurement_steps->at(n).size());
+		n_conc_measurement_points += int(this->conc_measurement_steps->at(n).size());
+		n_igvol_measurement_points += int(this->igvol_measurement_steps->at(n).size());
 	}
+	tot_measurement_points = n_conc_measurement_points + n_igvol_measurement_points;
+
 	//fill simulated vector
 	output->simulated.resize(tot_measurement_points);
 	int im_start = 0;
-	for(size_t n = 0; n < this->measurement_steps->size(); n++)
+	for(size_t n = 0; n < this->conc_measurement_steps->size(); n++)
 	{
-		for(size_t im = 0; im < this->measurement_steps->at(n).size(); im++)
+		for(size_t im = 0; im < this->conc_measurement_steps->at(n).size(); im++)
 		{
-			int t = this->measurement_steps->at(n)[im];
-			output->simulated[im_start + im] = this->sim_conc[n][t];
+			int t = this->conc_measurement_steps->at(n)[im];
+			output->simulated[im_start + im] = this->sim_conc[n][t];  //noise?
 		}
-		im_start += int(this->measurement_steps->at(n).size());
-	}
-}
+		im_start += int(this->conc_measurement_steps->at(n).size());
+		
+		double last_cumul_volTO = 0;
+		double last_cumul_igvol = 0;
+		for(size_t im = 0; im < this->igvol_measurement_steps->at(n).size(); im++)
+		{
+			int t = this->igvol_measurement_steps->at(n)[im];
 
-void CompartmentalModelBase::run_MRI_model(MBWModelOutputs* output)
-{
-	this->reset_model(0);   //sets all concs to zero
-	this->set_inhaled_bc(1.0);
-	this->breath_step(this->MRI_bag_vol, 5.0);
-	this->measure_MRI_dist(output);
+			output->simulated[im_start + im] = (this->sim_igvol_cumul[n][t] - last_cumul_igvol); //noise?
+			last_cumul_igvol = this->sim_igvol_cumul[n][t];  
+			last_cumul_volTO = this->sim_volTO_cumul[n][t];
+		}
+		im_start += int(this->igvol_measurement_steps->at(n).size());   
+		
+	}
 }
 
 void CompartmentalModelBase::measure_MRI_dist(MBWModelOutputs* output)
@@ -884,53 +1066,53 @@ double CompartmentalModelBase::get_mouth_conc_generic()
 {
 	double vol = 0;
 	size_t e = 0;
-	while(vol < this->mouth_point && e < this->shared_ds->VolumeElements.size())
+	while(vol < this->conc_measurement_point && e < this->shared_ds->VolumeElements.size())
 	{
 		vol += this->shared_ds->VolumeElements[e]->get_volume();
 		e++;
 	}
-	if(vol < this->mouth_point) 
+	if(vol < this->conc_measurement_point) 
 	{
 		std::cerr << "Warning: measurement not taken exactly at the mouth"
 		          << std::endl;
 	}
-	e--;
-	//mouth measurement taken somewhere in this volume
-	
-	return ((vol - this->mouth_point) * this->shared_ds->VolumeElements[e]->get_ctop() 
-		    + (this->mouth_point - vol + this->shared_ds->VolumeElements[e]->get_volume())
-			* this->shared_ds->VolumeElements[e]->get_cbottom())
-			/(this->shared_ds->VolumeElements[e]->get_volume());
-}
 
-void CompartmentalModelBase::compute_volume_changes(const double & dvol, const double & dtime, 
-												    std::vector<double> & vols)
-{
-	//general function to calc volume updates assuming no interdependence of units
-	vols.resize(this->units.size());
-	double mean_dvol = dvol/this->units.size();
-	for(size_t i = 0; i < this->units.size(); i++)
+	double vover = vol - this->conc_measurement_point;
+	if(vover > 0)
 	{
-		vols[i] = this->units[i]->return_volume_change(mean_dvol, dtime);
+		e--;   //go back to last edge
+		double vnot_over = this->shared_ds->VolumeElements[e]->get_volume() - vover;
+		double ctop_eff = (vover*this->shared_ds->VolumeElements[e]->get_ctop() 
+						+ vnot_over*this->shared_ds->VolumeElements[e]->get_cbottom())
+			            / (this->shared_ds->VolumeElements[e]->get_volume());
+
+		return ctop_eff;
+	}
+	else
+	{
+		if(e > 0) return this->shared_ds->VolumeElements[e-1]->get_cbottom();
+		else return this->shared_ds->VolumeElements[e]->get_ctop();
 	}
 }
 
-void CompartmentalModelBase::reset_model(const double & C0, const double & inflation, const double & dt)
+void CompartmentalModelBase::reset_model(const double & C0, const double & inflation)
 {
 	//replace lung units
-	std::vector<double> dv;
-	this->compute_volume_changes(inflation, dt, dv);
 	for(size_t n = 0; n < this->units.size(); n++)
 	{
-		std::shared_ptr<LungUnit> old_unit = this->units[n];
-		this->units[n]->reset(old_unit->get_FRC_volume(), old_unit->get_FRC_volume()*C0,
-			                  old_unit->get_vent_ratio());
-		if(inflation > 0)
-		{
-			std::vector<std::shared_ptr<FlexibleVolumeElement>> inhaled;
-			inhaled.push_back(std::make_shared<FlexibleVolumeElement>(dv[n],C0,C0));
-			this->units[n]->inhale(inhaled, dt);
-		}
+			std::shared_ptr<LungUnit> old_unit = this->units[n];
+			this->units[n]->reset(old_unit->get_FRC_volume(), old_unit->get_FRC_volume()*C0,
+								  old_unit->get_vent_ratio());
+	}
+
+	//re-init ventilation model
+	std::vector<double> initial_dvols(NCOMPS);   //initial vols not necessarily the same as FRC
+	this->vent_solver->reset_solver(inflation, initial_dvols);
+	for(size_t n = 0; n < this->units.size(); n++)
+	{
+		double vh = this->units[n]->get_FRC_volume() + initial_dvols[n];
+		this->units[n]->set_volume(vh);
+		this->units[n]->set_ig_volume(vh*C0);
 	}
 
 	//replace private ds
@@ -947,21 +1129,59 @@ void CompartmentalModelBase::reset_model(const double & C0, const double & infla
 		                   std::make_shared<FlexibleVolumeElement>(vol, C0, C0));
 }
 
-void CompartmentalModelBase::breath_step(const double & dvol, const double & dt)
+double CompartmentalModelBase::get_igvol_rebreathe()
+{
+	double vol = 0, igvol = 0;
+	size_t e = 0;
+	while(vol < this->conc_measurement_point && e < this->shared_ds->VolumeElements.size())
+	{
+		vol += this->shared_ds->VolumeElements[e]->get_volume();
+		igvol += this->shared_ds->VolumeElements[e]->get_igvol();
+		e++;
+	}
+	if(vol < this->conc_measurement_point) 
+	{
+		std::cerr << "Warning: measurement not taken exactly at the mouth"
+		          << std::endl;
+	}
+	
+	//mouth measurement taken somewhere in this volume
+	double vover = vol - this->conc_measurement_point;
+	if(vover > 0)
+	{
+		e--;   //go back to last edge
+		double vnot_over = this->shared_ds->VolumeElements[e]->get_volume() - vover;
+		double ctop_eff = (vover*this->shared_ds->VolumeElements[e]->get_ctop() 
+						+ vnot_over*this->shared_ds->VolumeElements[e]->get_cbottom())
+			            / (this->shared_ds->VolumeElements[e]->get_volume());
+
+		FlexibleVolumeElement eff_vol(vover,ctop_eff,this->shared_ds->VolumeElements[e]->get_cbottom());
+		igvol -= eff_vol.get_igvol();   //subtract ig vol from bit over
+	}
+
+	return igvol;
+}
+
+double CompartmentalModelBase::breath_step(const double & dvol, const double & dt)
 {
 	//vectors for mixing point computation
 	std::vector<std::vector<std::shared_ptr<FlexibleVolumeElement>>> 
 		          into_mixpoint_from_above, into_mixpoint_from_below;
 	std::vector<double> dv_out_above, dv_out_below;
+	double exhaled_igvol;
 	into_mixpoint_from_above.reserve(1);
 	into_mixpoint_from_below.reserve(this->units.size());
 	dv_out_above.reserve(1);
 	dv_out_below.reserve(this->units.size());
+	exhaled_igvol  = -this->get_igvol_rebreathe();    //count ig volume in rebreathe vol initially 
+	//(if exhaling, some or all of it will end up in exhaled vols so needs to be subtracted to avoid double counting
+	//(if inhaling, some or all will end up in DS, so needs to be subtracted to avoid missing
 	if(dvol > 0) //inhalation -- add vol to shared ds 
 	{
 		std::vector<std::shared_ptr<FlexibleVolumeElement>> injected(1);
 		injected[0] = std::make_shared<FlexibleVolumeElement>(dvol, 
 			                     this->inhaled_conc, this->inhaled_conc);
+		exhaled_igvol -= injected[0]->get_igvol();  //rebreathed and inhaled
 		std::vector<std::shared_ptr<FlexibleVolumeElement>> ejected;
 		//inhale vol element into shared ds and store what comes out other end in above vector
 		this->shared_ds->shunt_down(injected, ejected);
@@ -974,7 +1194,7 @@ void CompartmentalModelBase::breath_step(const double & dvol, const double & dt)
 
 	//get volume updates of units
 	std::vector<double> dv;
-	this->compute_volume_changes(dvol, dt, dv);
+	this->vent_solver->compute_volume_changes(dvol, dt, dv);
 
 	//separate into inhaling and exhaling
 	std::vector<size_t> dv_inh;
@@ -1008,6 +1228,10 @@ void CompartmentalModelBase::breath_step(const double & dvol, const double & dt)
 	{
 		std::vector<std::shared_ptr<FlexibleVolumeElement>> exhaled;
 		this->shared_ds->shunt_up(out_of_mixpoint_above[0], exhaled);
+		for(size_t j = 0; j < exhaled.size(); j++) 
+		{
+			exhaled_igvol += exhaled[j]->get_igvol();
+		}
 	}
 	//finish units inhaling
 	for(size_t iu = 0; iu < dv_inh.size(); iu++)    
@@ -1017,6 +1241,30 @@ void CompartmentalModelBase::breath_step(const double & dvol, const double & dt)
 		this->private_ds[i]->shunt_down(out_of_mixpoint_below[iu], ejected);  
 		this->units[i]->inhale(ejected,dt);
 	}
+
+	exhaled_igvol += this->get_igvol_rebreathe();   //add on igvol left in rebreathe  
+	//(if exhaling, some or all of it will end up in exhaled vols so needs to be subtracted to avoid double counting
+	//(if inhaling, some or all will end up in DS, so needs to be subtracted to avoid missing
+
+	return exhaled_igvol;
+}
+
+void CompartmentalModelBase::create_sync_vent_solver()
+{
+
+	for(size_t i = 0; i < this->units.size(); i++)
+	{
+		this->units[i]->set_delay_ts(0.0);
+	}
+	this->vent_solver = std::make_shared<VentilationSolver>(&(this->units));
+}
+
+void CompartmentalModelBase::create_async_vent_solver(const double & delay_ts)
+{
+	generate_async_delays(this->units, delay_ts);
+
+	this->vent_solver = std::make_shared<AsyncVentilationSolver>(&(this->units), this->sim_vol_steps[0], 
+		                                                         this->sim_step_durations->at(0));
 }
 
 void generate_vent_dist_lognormal_rand(const std::map<std::string,double> & params, 
@@ -1144,3 +1392,284 @@ void rescale_to_unit_mean(std::vector<double> & x)
 	}
 	//check_mean_x /= double(Ncomps);
 }
+
+void generate_async_delays(std::vector<std::shared_ptr<LungUnit>> & units, const double & delay_ts)
+{
+	double max_vr = 0;
+	double min_vr = 1;
+	for(size_t i = 0; i < NCOMPS; i++)
+	{
+		if(units[i]->get_vent_ratio() > max_vr) max_vr = units[i]->get_vent_ratio();
+		if(units[i]->get_vent_ratio() < min_vr) min_vr = units[i]->get_vent_ratio();
+	}
+
+	for(size_t i = 0; i < NCOMPS; i++)
+	{
+		units[i]->set_delay_ts(delay_ts/(1 + units[i]->get_vent_ratio()));
+		//delay ts is only achieved for vent ratio = 0
+	}
+}
+
+void AsyncVentilationSolver::fit_warmup_data(const std::vector<double> & flow_data,
+						      const std::vector<double> & flow_duration)
+{
+	//need to extract warm-up data from actual flow data
+	//get mean exhalation size and duration
+	double exh_vol_sum = 0, exh_dur_sum = 0;
+	int exh_count = 0;
+	//get mean inhalation size and duration
+	double inh_vol_sum = 0, inh_dur_sum = 0;
+	int inh_count = 0;
+	
+	for(size_t i = 0; i < flow_data.size(); i++)
+	{
+		if(flow_data[i] > 0)  //inhalation
+		{
+			if(i == 0 || flow_data[i-1] < 0)   //new inhalation
+			{
+				inh_count += 1;
+			}
+			inh_vol_sum += flow_data[i];
+			inh_dur_sum += flow_duration[i];
+		}
+		else
+		{
+			if(i == 0 || flow_data[i-1] > 0)  //new exhalation   
+			{
+				exh_count += 1;
+			}
+			exh_vol_sum -= flow_data[i];
+			exh_dur_sum += flow_duration[i];
+		}
+	}
+	//assume it is just the mean volumes and durations to warm up
+	double mean_exh_vol = exh_vol_sum/exh_count;
+	double mean_inh_vol = inh_vol_sum/inh_count;
+	double mean_exh_dur = exh_dur_sum/exh_count;
+	double mean_inh_dur = inh_dur_sum/inh_count;
+	double max_delay = this->delays.maxCoeff();
+
+	int Nwarmup_breaths = int(ceil((mean_inh_dur + mean_exh_dur)/(10*max_delay)));
+	this->warm_up_fluxes = std::vector<double>(2*Nwarmup_breaths);
+	this->warm_up_flux_durations = std::vector<double>(2*Nwarmup_breaths);
+	for(int i = 0; i < Nwarmup_breaths; i++)
+	{
+		this->warm_up_fluxes[2*i] = mean_inh_vol;
+		this->warm_up_flux_durations[2*i] = mean_inh_dur;
+		this->warm_up_fluxes[2*i+1] = -mean_exh_vol;
+		this->warm_up_flux_durations[2*i+1] = mean_exh_dur;
+	}
+}
+
+void AsyncVentilationSolver::run_warmup(const double & inflation_vol, std::vector<double> & initial_dvols)
+{
+	for(size_t i = 0; i < NCOMPS; i++)
+	{
+		this->Vols_old[i] = units->at(i)->get_volume();
+		this->V0[i] = units->at(i)->get_FRC_volume();
+	}
+	this->Vp_old = this->Vols_old.sum()/NCOMPS;
+	std::vector<double> wuf_copy = this->warm_up_fluxes;
+	bool search_back = true;
+	size_t nback = this->warm_up_fluxes.size()-1;
+	if(inflation_vol != 0.0)
+	{
+		while(search_back)
+		{
+			if((this->warm_up_fluxes[nback] > 0 && inflation_vol > 0) ||
+			   (this->warm_up_fluxes[nback] < 0 && inflation_vol < 0))
+			{
+				wuf_copy[nback] += inflation_vol;      //add extra inhalation/exhalation to end of warm up
+				search_back = false;
+			}
+			nback--;
+		}
+	}
+
+	for(size_t n = 0; n < wuf_copy.size(); n++)  //do warm up calc
+	{
+		this->compute_volume_changes(wuf_copy[n], this->warm_up_flux_durations[n], initial_dvols);
+	}
+}
+
+AsyncVentilationSolver::AsyncVentilationSolver(std::vector<std::shared_ptr<LungUnit>> * units,
+		                                      const std::vector<double> & flux_data,
+					                          const std::vector<double> & flux_durations):VentilationSolver(units)
+{
+	this->dt_min = 0.01; 
+	this->A.resize(NCOMPS+1,NCOMPS+1);
+	this->Vols_old.resize(NCOMPS);
+	this->V0.resize(NCOMPS);
+	this->Vrates.resize(NCOMPS);
+	this->delays.resize(NCOMPS);
+	this->A.reserve(3*NCOMPS);
+	for(size_t i = 0; i < NCOMPS; i++)
+	{
+		this->A.insert(i,i) = units->at(i)->get_delay_ts()/this->dt_min + 0.5;
+		this->A.insert(NCOMPS,i) = 1.0/this->dt_min;
+		this->A.insert(i,NCOMPS) = -0.5*units->at(i)->get_vent_ratio_original();
+		this->Vrates[i] = units->at(i)->get_vent_ratio_original();
+		this->delays[i] = units->at(i)->get_delay_ts();
+	}
+	// Compute the numerical factorization (A does not change)
+	this->solver.analyzePattern(A); 
+	this->solver.factorize(A);
+
+	this->fit_warmup_data(flux_data,flux_durations);
+}
+
+void AsyncVentilationSolver::compute_volume_changes(const double & dvol, const double & dtime, 
+						    std::vector<double> & dvols)
+{
+	if(dvols.size() != NCOMPS) dvols.resize(NCOMPS);
+	int Nsteps = int(ceil(dtime/this->dt_min));
+	double remainder = Nsteps*this->dt_min - dtime;
+	Eigen::VectorXd b(NCOMPS+1);
+	Eigen::VectorXd Vols_orig = this->Vols_old;
+	Eigen::VectorXd Vols_new = this->Vols_old;
+	double Vp_new = this->Vp_old;
+	for(int n = 0; n < Nsteps; ++n)
+	{
+		this->Vols_old = Vols_new;
+		this->Vp_old = Vp_new;
+		b.head(NCOMPS) =  this->V0 + (1.0/this->dt_min)*this->delays.asDiagonal()*this->Vols_old 
+						  - 0.5*this->Vols_old + 0.5*this->Vp_old*this->Vrates;
+		b[NCOMPS] = this->Vols_old.sum()/this->dt_min + dvol/dtime;
+		Eigen::VectorXd x = this->solver.solve(b);
+		for(size_t i = 0; i < NCOMPS; i++)
+		{
+			Vols_new[i] = x[i];  //update volumes
+		}
+		Vp_new = x[NCOMPS];
+
+	}
+	//interpolate last step
+	if(remainder > 0)
+	{
+		double dt_frac = remainder/this->dt_min;
+		Vols_new = (1.0-dt_frac)*this->Vols_old + dt_frac*Vols_new;
+		Vp_new = (1.0-dt_frac)*this->Vp_old + dt_frac*Vp_new;
+	}
+	//check no negative volumes and correct
+	double vol_lost = 0.0;  
+	for(size_t i = 0; i < NCOMPS; i++)
+	{	
+		if(this->Vols_old[i] < 0)
+		{
+			vol_lost -= Vols_new[i];
+			Vols_new[i] = 0;
+		}
+	}
+	if(vol_lost > 0)   //fudge correction if there are negatives
+	{
+		double vol_frac = vol_lost/Vols_new.sum();
+		Vols_new = (1-vol_frac)*Vols_new;
+		//std::cout << "Warning. Negative volumes encountered." << std::endl;
+	}
+	for(size_t i = 0; i < NCOMPS; i++) dvols[i] = Vols_new[i] - Vols_orig[i];
+	this->Vols_old = Vols_new;
+	this->Vp_old = Vp_new;
+}
+
+void TrumpetModelBase::build_model(const MBWModelOptions & opt,
+								   const std::vector<double> & params_h,
+		                           const std::vector<std::string> param_names_h)
+{
+	using namespace std;
+	map<std::string, double> param_dict;
+	for(int ip = 0; ip < int(params_h.size()); ip++)
+	{
+		param_dict[param_names_h[ip]] = params_h[ip];
+	}
+
+	double VD = param_dict.at(VD_PARAM_NAME);
+	
+	//these can be defined in builder
+	int MaxGen = 15;
+	int CondGenMixMax = 6;
+	double L2dratio = 3.0;
+	int NCGMMedges = pow(2,CondGenMixMax);
+	int NCondEdges = (2 + MaxGen - CondGenMixMax)*NCGMMedges - 1;
+	std::vector<Eigen::Triplet<double>> IncTrips;
+	int edge_no = 0;
+	for(int j = 0; j <= CondGenMixMax; j++)
+	{
+		for(int k = 0; k < pow(2,j); k++)
+		{
+			int nin = 
+			int nout = 
+		}
+	}
+
+
+	this->Incidence.setFromTriplets(IncTrips.begin(),IncTrips.end());
+
+
+	//SDS[0] = std::make_shared<FlexibleVolumeElement>(VDS, 0, 0);
+	//this->shared_ds = std::make_shared<DSVolume>(SDS);
+
+	////initialise model based on params
+	//this->private_ds.resize(opt.Nunits);
+	//this->units.resize(opt.Nunits);
+	//double VDperunit = VDP / ((double) opt.Nunits);
+	////build private dead-space objects
+	//for(int i = 0; i < opt.Nunits; i++)
+	//{
+	//	vector<std::shared_ptr<FlexibleVolumeElement>> PDS(1);
+	//	PDS[0] = std::make_shared<FlexibleVolumeElement>(VDperunit, 0, 0);
+	//	this->private_ds[i] = std::make_shared<DSVolume>(PDS);
+	//}
+
+	//double Vbag = (param_dict.at(FRC_PARAM_NAME))/ ((double) opt.Nunits);
+	////assign function pointers based on options
+	////ventilation dist options
+	//if(opt.vent_dist_type == LOGNORMAL_CODE) this->generate_vent_dist = &generate_vent_dist_lognormal_rand;
+	//else if(opt.vent_dist_type == BIMODAL_CODE) this->generate_vent_dist = &generate_vent_dist_bimodal_rand;
+	////lung unit options
+	//if(opt.lung_unit_type == BASIC_UNIT_CODE) this->initialise_lung_unit = &build_basic_lung_unit;
+	//else if(opt.lung_unit_type == ASYMM_UNIT_CODE) this->initialise_lung_unit = &build_asymm_lung_unit;
+
+	////generate ventilation dist
+	//vector<double> Vratios;
+	//this->generate_vent_dist(param_dict, opt.Nunits, Vratios);
+	////build lung units
+	//for(int i = 0; i < opt.Nunits; i++)
+	//{
+	//	//build based on options
+	//	this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
+	//}
+	////sync option
+	//if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
+	//else this->create_async_vent_solver(param_dict.at(DELAY_PARAM_NAME));
+	//this->washout_start_inflation.resize(this->Cinit.size());
+	//vector<double> Deltas;
+	//Deltas.resize(this->Cinit.size());
+	//double total_deltas = 0;
+	//for(size_t n = 1; n < this->Cinit.size(); n++)
+	//{
+	//	std::stringstream ss;
+	//	ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+	//	Deltas[n] = param_dict.at(ss.str().c_str());
+	//	total_deltas += Deltas[n];
+	//}
+	//Deltas[0] = -total_deltas/(this->Cinit.size() + total_deltas);   
+	////by definition, mean must be 0, so first test must cancel out the rest
+	//this->washout_start_inflation[0] = Deltas[0]*param_dict.at(FRC_PARAM_NAME);
+	//for(size_t n = 1; n < this->Cinit.size(); n++)
+	//{
+	//	std::stringstream ss;
+	//	ss << FRC_TEST_MODIFIER_NAME << "_" << n;
+	//	this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
+	//}
+
+	////create mixing point
+	//double mp_vol_scale = opt.mix_vol_frac_step*(VDS + VDP);
+	////assume step is relative to DS volume
+	//this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
+	//this->params = params_h;
+	//this->NMRIPoints = opt.NMR_samples;
+	//this->simulate_washin = opt.simulate_washin;
+	//this->washout_start_timepoint = opt.washout_start_timepoint;
+}
+
+

@@ -73,7 +73,7 @@ public:
 class LungUnit
 {
 protected:
-	double FRC, volume, IGvolume, vent_ratio, vent_ratio_orig, conc, conc_old;
+	double FRC, volume, IGvolume, vent_ratio, vent_ratio_orig, conc, conc_old, delay_ts;
 
 public:
 	LungUnit(){};
@@ -92,11 +92,14 @@ public:
 	inline double get_vent_ratio() const { return (this->vent_ratio); }
 	inline double get_vent_ratio_original() const { return (this->vent_ratio_orig); }
 	inline double get_ig_volume() const { return (this->IGvolume); }
+	inline double get_delay_ts() const {return (this->delay_ts); }
 
 	inline void set_volume(const double & v){ this->volume = v; }
+	inline void set_ig_volume(const double & vig){ this->IGvolume = vig; }
 	inline void set_vent_ratio(const double & x){ this->vent_ratio = x; }
 	inline void set_orig_vent_ratio(const double & x){ this->vent_ratio_orig = x; }
 	inline void set_FRC_volume(const double & f){ this->FRC = f; }
+	inline void set_delay_ts(const double & d){ this->delay_ts = d; }
 	inline void initialise_conc(const double & c)   //for restart
 	{
 		this->conc = c;

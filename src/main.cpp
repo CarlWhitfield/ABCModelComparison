@@ -165,49 +165,6 @@ int main(int argc, char *argv[])
 
 	//print summary?
 
-	//test code
-	/*vector<ModelGenBaseClassName*> model_gens;
-	model_gens.resize(2);
-	std::shared_ptr<ModelGen1Class> modelgen1 = std::make_shared<ModelGen1Class>(inputs.get());
-	std::shared_ptr<ModelGen2Class> modelgen2 = std::make_shared<ModelGen2Class>(inputs.get());
-	model_gens[0] = modelgen1.get();
-	model_gens[1] = modelgen2.get();
-
-	std::shared_ptr<CompartmentalModelBase> model1 = std::make_shared<CompartmentalModelBase>();
-	std::vector<double> params;
-	params.push_back(2.0);
-	params.push_back(0.15);
-	params.push_back(0.8);
-	model_gens[0]->generate_model(params, model1.get());
-
-	std::shared_ptr<CompartmentalModelBase> model2 = std::make_shared<CompartmentalModelBase>();
-	params.push_back(0.5);
-	model_gens[1]->generate_model(params, model2.get());*/
-
-
-
-	
-
-	////get input path
-	//string input_path = argv[argc-1]; 
-	//if(i_core == 0) cout << "Input file path is: " << input_path << endl;
-
-	////initialise ABC object
-	//vector<shared_ptr<ModelGenBaseClassName>> ModelGens;
-	//assign_model_gens(ModelGens);
-	//shared_ptr<DistanceName> DistFunc = make_shared<DistanceName>();
-	//shared_ptr<ModelInputName> ModelIn = make_shared<ModelInputName>(input_path);
-
-	//ABCModelSelection<ModelGenBaseClassName, ModelBaseClassName, DistanceName,
-	//	    ModelInputName, ModelOutputName> ABCalgorithm(ModelGens, DistFunc, ModelIn);
-	//
-	//ABCalgorithm.initialise(N_ACCEPT, N_GENS, N_CUT, MIN_DIST, N_TIMES_CUTOFF);
-	//
-	////run ABC algorithm
-	//MPI_Barrier(MPI_COMM_WORLD);
-
-	//ABCalgorithm.run();
-
 	MPI_Finalize();
 	return 0;
 }

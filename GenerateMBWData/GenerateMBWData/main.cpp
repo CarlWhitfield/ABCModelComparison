@@ -34,37 +34,37 @@ int main(int argc, char *argv[])
 
 	std::cout << "Inputs generated" << std::endl;
 	//generate model
-	CompartmentalModelBase model_h;
+	TrumpetModelBase model_h;
 	model_h.set_input_data(inputs.get());
 	model_h.build_model(model_options, model_params, model_param_names);
 
-	std::cout << "Model built" << std::endl;
-	std::shared_ptr<MBWModelOutputs> model_outputs = std::make_shared<MBWModelOutputs>();
-	//run model
-	model_h.simulate(model_outputs.get());
+	//std::cout << "Model built" << std::endl;
+	//std::shared_ptr<MBWModelOutputs> model_outputs = std::make_shared<MBWModelOutputs>();
+	////run model
+	//model_h.simulate(model_outputs.get());
 
-	std::cout << "Model built" << std::endl;
-	//print outputs
-	std::string fhead = param_file;
-	fhead.erase(param_file.length() - 7, 7);
-	int i_offset = 0;
-	for(int n = 0; n < inputs->Ntests; n++)
-	{
-		std::stringstream ss;
-		ss << fhead << "-" << n << ".txt";
-		std::ofstream fout(ss.str().c_str());
-		fout << "Raw data	******************************************************\n";
-		fout << "Time[ms]\t" << "Flow\t" << "SF6\t" << "O2\t" << "CO2\t\n";
-		
-		for(unsigned int i = 0; i < inputs->sim_vol_steps[n].size(); i++)
-		{
-			fout << i*10 << '\t' << inputs->sim_vol_steps[n][i]/(BTPSout*0.01) << '\t'
-				 << model_outputs->simulated[i_offset + i] << "\t0\t0\n";
-		}
-		i_offset += inputs->sim_vol_steps[n].size();
+	//std::cout << "Model built" << std::endl;
+	////print outputs
+	//std::string fhead = param_file;
+	//fhead.erase(param_file.length() - 7, 7);
+	//int i_offset = 0;
+	//for(int n = 0; n < inputs->Ntests; n++)
+	//{
+	//	std::stringstream ss;
+	//	ss << fhead << "-" << n << ".txt";
+	//	std::ofstream fout(ss.str().c_str());
+	//	fout << "Raw data	******************************************************\n";
+	//	fout << "Time[ms]\t" << "Flow\t" << "SF6\t" << "O2\t" << "CO2\t\n";
+	//	
+	//	for(unsigned int i = 0; i < inputs->sim_vol_steps[n].size(); i++)
+	//	{
+	//		fout << i*10 << '\t' << inputs->sim_vol_steps[n][i]/(BTPSout*0.01) << '\t'
+	//			 << model_outputs->simulated[i_offset + i] << "\t0\t0\n";
+	//	}
+	//	i_offset += inputs->sim_vol_steps[n].size();
 
-		fout.close();
-	}
+	//	fout.close();
+	//}
 
 
 

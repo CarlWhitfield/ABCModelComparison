@@ -37,13 +37,14 @@ double ks_statistic_normalised(const std::vector<double> & v0, const std::vector
 }
 
 double DistanceFunctionBase::distance(const std::vector<double> & measured, 
-		                              const std::vector<double> & simulated)
+		                              const std::vector<double> & simulated,
+									  const std::vector<double> & weights)
 {
 	//default distance function: root mean squared residual
 	double dist = 0;
 	for(int i = 0; i < int(measured.size()); i++)
 	{
-		dist += (measured[i] - simulated[i])*(measured[i] - simulated[i]);
+		dist += weights[i]*(measured[i] - simulated[i])*(measured[i] - simulated[i]);
 	}
 	return sqrt(dist);
 }

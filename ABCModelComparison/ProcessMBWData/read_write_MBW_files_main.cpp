@@ -1,4 +1,5 @@
 #include"read_mbw_data.h"
+#include"mbw_processing_params.h"
 #include<file_manip.h>
 #include<boost/filesystem.hpp>
 
@@ -6,19 +7,14 @@ using namespace std;
 
 int main(int argc, char *argv[])
 {
-	std::vector<std::string>argv_copy(argc);
-	for (int i=0;i<argc;i++) 
-	{
-		argv_copy[i]=argv[i];
-	}
-	double Vbag, machine_ds;
 	string filepath, subject;
 	vector<std::shared_ptr<MBWRawFile>> mbw_files;
-	if(argc > 2)
+	if(argc > 1)  //extract subject name first (folder name above current folder)
 	{
-		boost::filesystem::path path_ss(argv[2]);
-		filepath = path_ss.parent_path().string();
-		subject = path_ss.parent_path().filename().string();
+		boost::filesystem::path path_ss(argv[1]);
+		boost::filesystem::path full_path = canonical(path_ss);
+		filepath = full_path.parent_path().parent_path().string();
+		subject = full_path.parent_path().parent_path().filename().string();
 	}
 	else
 	{
@@ -26,13 +22,18 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	if(get_raw_mbw_data(argv_copy, mbw_files, Vbag, machine_ds)) return 1;
+	std::shared_ptr<LCIOptionList> options = std::make_shared<LCIOptionList>();         //start by assigning default option and paramter lists
+	std::shared_ptr<LCIParameterList> params = get_raw_mbw_data(argc, argv, mbw_files, options.get());
 
-	std::shared_ptr<MBWData> MBWprocessed = std::make_shared<MBWData>(mbw_files);
-	MBWprocessed->subject_name = subject;
-	MBWprocessed->Vbag = Vbag;
-	MBWprocessed->machine_ds = machine_ds;
+	std::shared_ptr<MBWData> MBWprocessed = std::make_shared<MBWData>(mbw_files, 
+		options.get(), params.get());
 	
+	MBWprocessed->subject_name = subject;
+	//these can all be moved to ABC input
+	MBWprocessed->machine_ds = 0.001*params->get_param<double>(MACHINE_DS_PARAM_NAME)->get_value();   //convert to L
+	MBWprocessed->extra_rebreathe_vol = 0.001*params->get_param<double>(REBREATHE_VOL_PARAM_NAME)->get_value();  //convert to L
+	MBWprocessed->Vbag = params->get_param<double>(MRI_VBAG_PARAM_NAME)->get_value();  //L
+
 	write_processed_washout_data(filepath,MBWprocessed.get());
 	write_mbw_summary(filepath,MBWprocessed.get());
 

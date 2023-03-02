@@ -6,6 +6,7 @@
 
 #define DEFAULT_VDIST_TYPE LOGNORMAL_CODE
 #define DEFAULT_LUNG_UNIT BASIC_UNIT_CODE
+#define DEFAULT_BREATH_MODEL SYNC_MODEL_CODE
 #define DEFAULT_FRC 3.0 //L
 #define DEFAULT_VD 0.1  //L
 #define DEFAULT_VDSFRAC 0.0   //0--1
@@ -15,6 +16,7 @@
 #define DEFAULT_VFASTFRAC 1.0   //Unitless 0--1
 #define DEFAULT_ASYMM 0.0     //0--1
 #define DEFAULT_DIFFSCALE 0.5   //s
+#define DEFAULT_DELAY_SECS 1.0  //s
 
 #define MACHINE_DS_PARAM_NAME "Machine_deadspace"
 #define DEFAULT_MACHINE_DS 0.036   //L
@@ -36,7 +38,15 @@ class MBWParameterList: public inlist::ParameterList<int, double>
 {
 public:
 	MBWParameterList();   //constructor for simulation
+	void add_start_inflation_params(const int & Ntests);
 	void check_validity(MBWOptionList *o);
+};
+
+class DoubleParam: public inlist::Parameter<double>
+{
+public:
+	DoubleParam(const double & val, const std::string & nam):Parameter<double>(val, nam){};
+	bool isOK();
 };
 
 class PositiveDoubleParam: public inlist::Parameter<double>

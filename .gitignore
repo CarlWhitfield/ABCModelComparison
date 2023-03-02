@@ -21,3 +21,5 @@ ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
 
 
 *.vcxproj
+*.unsuccessfulbuild
+*.dll

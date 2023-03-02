@@ -2,15 +2,15 @@
 #define SETTINGS_H
 
 //ABC settings
-#define N_PROCS 4  //number of processors to use
-#define N_GENS 30   //0 to just keep going
-#define N_ACCEPT 1120 //1120 //1400// 1000  //min number of accepted
-#define N_CUT 672   //670 //800 //500 //fraction to use as cutoff
+#define N_PROCS	10  //number of processors to use
+#define N_GENS 15   //0 to just keep going
+#define N_ACCEPT 500 //1120 //1400// 1000  //min number of accepted
+#define N_CUT 200   //670 //800 //500 //fraction to use as cutoff
 #define MIN_DIST 0.0 //cutoff distance, define distance so that this is reasonable
 #define USE_DIST_WEIGHTS false    //whether or not to use distance weights
 #define USE_SCALE_WEIGHTS false   //whether or not to scale breath weight by distance
 #define KS_STAT_CUTOFF 1.00  //normalised K-S statistic (K-S * sqrt(n*m/(n+m)))
-#define N_TIMES_CUTOFF 50 
+#define N_TIMES_CUTOFF 100
 
 #include"MBW_models.h"   //include headers for model libraries
 
@@ -32,6 +32,7 @@ typedef MBWModelOutputs ModelOutputName;
 //define models to compare (up to 5)
 #define N_MODELS 1
 typedef BasicLognormalModelGenerator ModelGen1Class;
+//typedef BasicLognormalAsyncModelGenerator ModelGen2Class;
 //typedef LognormalModelSDSGenerator ModelGen2Class;
 //typedef BasicLognormalAsymmModelGenerator ModelGen3Class;
 //typedef LognormalAsymmSDSModelGenerator ModelGen4Class;

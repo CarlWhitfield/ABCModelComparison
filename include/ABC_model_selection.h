@@ -87,7 +87,7 @@ class ModelInputBase
 {
 	//base class for inputs to each model that remain unchanged
 public:
-	std::vector<double> measured;  //stores measured data
+	std::vector<double> measured, dist_weights;  //stores measured data
 	std::string filepath;  //filepath to data directory
 	ModelInputBase()
 	{
@@ -115,7 +115,8 @@ class DistanceFunctionBase
 
 public:
 	virtual double distance(const std::vector<double> & measured, 
-		                    const std::vector<double> & simulated);
+		                    const std::vector<double> & simulated,
+							const std::vector<double> & weights);
 };
 
 template<class ModelOutputs> 
@@ -265,13 +266,20 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 				{
 					this->generate_from_previous(id, pgen);  //draw based on previous
 				}
+				/*std::cout << "Core: " << i_core << " Local sim: " << local_tot_sims << ", model: " << id << ". Params: ";
+				for(int n = 0; n < pgen.size(); n++)
+				{
+					if(n > 0) std::cout << ", ";
+					std::cout << pgen[n];
+				}
+				std::cout << std::endl;*/
 				if(this->ModelGen[id]->prior_density(pgen) > 0)   //redraw if not in prior
 				{
 					std::shared_ptr<Model> model;
 					this->ModelGen[id]->generate_model(pgen, model);
 					model->simulate(&output);
 					local_tot_sims++;
-					dist = this->DistFunc->distance(this->ModelInput->measured, output.simulated);
+					dist = this->DistFunc->distance(this->ModelInput->measured, output.simulated, this->ModelInput->dist_weights);
 					if(t_gen == 0 || dist < this->cutoff_distance)
 					{
 						repeat = false;

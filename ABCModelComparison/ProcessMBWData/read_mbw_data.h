@@ -6,6 +6,16 @@
 #include<unordered_map>
 #include<Eigen\Dense>
 #include<memory>
+#include"mbw_processing_params.h"
+
+#define KELVIN0 273.15
+#define MMHG_2_PA 133.32
+#define BODY_TEMP_K 310.15
+
+//file extensions
+#define RAW_FILE_EXT "txt"
+#define OPTIONS_FILE_EXT "options"
+#define PARAMS_FILE_EXT "params"
 
 //file headers to find
 #define SF6_FHEAD "SF6"
@@ -72,7 +82,7 @@ class MBWRawFile
 protected:
 	void trim_and_apply_delay();
 	void measure_breath_start_end_points();
-	void define_washin_and_washout();
+	void define_washin_and_washout(const double & washin_min_conc);
 	std::vector<double> conc_data, CO2_data, O2_data, time, flow_data;  //store washout data
 	std::vector<double> conc_data_washin, CO2_data_washin, O2_data_washin, 
 		                time_washin, flow_data_washin;  //store washout data
@@ -130,14 +140,14 @@ protected:
 	}
 public:
 	MBWRawFile(const std::string & fname, const double & CO2d, 
-		       const double & O2d)    //construct from raw files
+		       const double & O2d, const double & washin_min_conc)    //construct from raw files
 	{
 		this->CO2_delay = CO2d;
 		this->O2_delay = O2d;
-		read_raw_data(fname);
+		read_raw_data(fname, washin_min_conc);
 	}
 
-	void read_raw_data(const std::string & fname);
+	void read_raw_data(const std::string & fname, const double & washin_min_conc);
 
 	inline size_t count_washin_timesteps() const { return conc_data_washin.size(); }
 	inline size_t count_washout_timesteps() const { return conc_data.size(); }
@@ -176,39 +186,47 @@ public:
 	inline double get_O2(const size_t & k) const {return (this->get_full_test_data(k, O2_DATA_KEY)); }
 };
 
-int get_raw_mbw_data(const std::vector<std::string> & argv, 
+std::shared_ptr<LCIParameterList> get_raw_mbw_data(const int &argc, char** argv, 
 					 std::vector<std::shared_ptr<MBWRawFile>> & mbw_files, 
-					 double & Vbag, double & machine_ds);
+					 LCIOptionList *options);
 
 //class for processing raw data
 struct MBWTest
 {
 private:
-	void process_MBW_inputs(std::shared_ptr<MBWRawFile> MBW_raw_file);
-	void adjust_flow_for_BTPS_and_bias(std::shared_ptr<MBWRawFile> MBWfile, 
-		       Eigen::VectorXd & adjusted_washin_flow, Eigen::VectorXd & adjusted_washout_flow);
+	void process_MBW_inputs(std::shared_ptr<MBWRawFile> MBW_raw_file, LCIOptionList *opt,
+		LCIParameterList *par, const int & Test_no);
+	void adjust_flow_for_BTPS(std::shared_ptr<MBWRawFile> MBWfile, 
+		       Eigen::VectorXd & adjusted_washin_flow, Eigen::VectorXd & adjusted_washout_flow, 
+			   const double & BTPSin);
 	void measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile, const Eigen::VectorXd & washin_flux);
 	void measure_washout_breath_volumes(std::shared_ptr<MBWRawFile> MBWFile, 
 		                                const Eigen::VectorXd & washout_flux);
-	void measure_LCI_FRC_FDS(std::shared_ptr<MBWRawFile>, const Eigen::VectorXd & washout_flux);
-	void define_breath_measurements(std::shared_ptr<MBWRawFile>, 
-		                            const Eigen::VectorXd & washout_flux);
+	void measure_LCI_FRC_FDS(std::shared_ptr<MBWRawFile>, const Eigen::VectorXd & washout_flux,
+		                     const double & LCI_frac);
+	void define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile, 
+									const Eigen::VectorXd & washout_flux,
+									const bool & measure_subset, const bool & fixed_step_size,
+									const bool & measure_inspired_vols,
+									const int & Nmeasure, const int & NphaseII, 
+									const int & NphaseIII, const double & vol_sim_step_frac);
 public:
 	int Nbreaths, LCI_point;
 	double Cinit, Cinit_std, median_FDS, FRC0, LCI;  //MBW test measurements
 	std::vector<size_t> inhaled_breath_pts, exhaled_breath_pts,  //number of time points in each breath
-		                measurement_steps;      //stores location sim_steps where measurements take place
+		                conc_measurement_steps, igvol_measurement_steps;      //stores location sim_steps where measurements take place
 	std::vector<double> inhaled_breath_vols, exhaled_breath_vols,    //breath volumes
 		                cumulative_exhaled_vols, cumulative_inhaled_vols,   //cumulative volumes
 						Cet, CO2et, FDS,    //store standard measures
-						conc_measurements, measurement_times, //store measurements for distance function
+						conc_measurements, igvol_measurements,    //store measurements for distance function
 						sim_vol_steps, sim_step_durations,   //stores info for simulation timesteps
 						exhaled_SF6vols, inhaled_SF6vols, cumulative_exhaled_SF6vols,    //SF6 breath volumes
 						cumulative_inhaled_SF6vols;   //cumulative SF6 volumes
 
-	MBWTest(std::shared_ptr<MBWRawFile> MBW_raw_file)
+	MBWTest(std::shared_ptr<MBWRawFile> MBW_raw_file, LCIOptionList *opt,
+		LCIParameterList *par, const int & Test_no)
 	{
-		this->process_MBW_inputs(MBW_raw_file);
+		this->process_MBW_inputs(MBW_raw_file, opt, par, Test_no);
 	}
 };
 
@@ -216,23 +234,25 @@ public:
 struct MBWData
 {
 private:
-	void process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles);
+	void process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles,
+		 LCIOptionList * opt, LCIParameterList * par);
 
 public:
 	std::vector<std::vector<double>> sim_vol_steps, sim_step_durations,
-		conc_measurements, measurement_times;
-	std::vector<std::vector<size_t>> measurement_steps;
+		conc_measurements, igvol_measurements;
+	std::vector<std::vector<size_t>> conc_measurement_steps, igvol_measurement_steps;
 	std::vector<double> Cinit, Cinit_std, LCI;
-	double dead_space, FRC0, machine_ds, Vbag, VT0, Tinsp, Texp;     //timestep and median fowler dead-space
+	double dead_space, FRC0, machine_ds, extra_rebreathe_vol, Vbag, VT0, Tinsp, Texp;     //timestep and median fowler dead-space
 	//Eigen::MatrixXd weights;
 	std::string subject_name;
 
 	MBWData()
 	{
 	}
-	MBWData(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles)
+	MBWData(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles, 
+		    LCIOptionList * opt, LCIParameterList * par)
 	{
-		this->process_data_inputs(MBWfiles);
+		this->process_data_inputs(MBWfiles, opt, par);
 	}
 	~MBWData()
 	{	
@@ -242,5 +262,13 @@ public:
 void write_processed_washout_data(const std::string & filepath, const MBWData* mbw_data);
 
 void write_mbw_summary(const std::string & filepath, const MBWData* mbw_data);
+
+inline double PH20_Buck(const double & HumidityFrac, const double & TempC)
+{
+	double P = 0.61121*exp((18.678-(TempC/234.5))*(TempC/(257.14+TempC)));
+	return HumidityFrac*P;
+}
+
+double calc_BTPS(LCIParameterList *par, const int & Test_no);
 
 #endif

@@ -1,6 +1,6 @@
 #include"read_mbw_data.h"
 #include"read_write_codes.h"
-#include"read_write_settings.h"
+#include"mbw_processing_params.h"
 #include<file_manip.h>
 #include<iostream>
 #include<fstream>
@@ -10,6 +10,26 @@
 #include<boost/filesystem.hpp>
 
 using namespace std;
+
+double calc_BTPS(LCIParameterList *par, const int & Test_no)
+{
+	stringstream ss;
+	ss << TEMPERATURE_PARAM_NAME << "_" << Test_no+1;
+	double TempC = par->get_param<double>(ss.str().c_str())->get_value();
+	double TempK = TempC + KELVIN0;
+	ss.str("");
+	ss.clear();
+	ss << PRESSURE_PARAM_NAME << "_" << Test_no+1;
+	double PressurePa = MMHG_2_PA*par->get_param<double>(ss.str().c_str())->get_value();
+	ss.str("");
+	ss.clear();
+	ss << HUMIDITY_PARAM_NAME << "_" << Test_no+1;
+	double HumidityFrac = 0.01*par->get_param<double>(ss.str().c_str())->get_value();
+	ss.str("");
+	ss.clear();
+	return (BODY_TEMP_K*(PressurePa - PH20_Buck(HumidityFrac,TempC))/
+		           (TempK*(PressurePa - PH20_Buck(1.0,BODY_TEMP_K))));
+}
 
 void linear_fit(const Eigen::VectorXd & x, const Eigen::VectorXd & y, double & m, double & c)
 {
@@ -30,7 +50,7 @@ void linear_fit(const Eigen::VectorXd & x, const Eigen::VectorXd & y, double & m
 	}
 }
 
-void MBWRawFile::read_raw_data(const std::string & fname)
+void MBWRawFile::read_raw_data(const std::string & fname, const double & washin_min_conc)
 {
 	if(!check_infile(fname))
 	{
@@ -100,7 +120,7 @@ void MBWRawFile::read_raw_data(const std::string & fname)
 		this->measure_breath_start_end_points();
 
 		//nothing stored in washin vectors here yet, define them here
-		this->define_washin_and_washout();
+		this->define_washin_and_washout(washin_min_conc);
 
 		//print washout data
 		//{
@@ -149,8 +169,8 @@ void MBWRawFile::trim_and_apply_delay()  //unfinished -- need to think about raw
 	vector<double> time_new, SF6_new, O2_new, CO2_new, flow_new;
 
 	//delay in time steps (converted from secs)
-	unsigned CO2d_i = ((unsigned) (100*this->CO2_delay));
-	unsigned O2d_i = ((unsigned) (100*this->O2_delay));
+	unsigned CO2d_i = ((unsigned) (0.1*this->CO2_delay));
+	unsigned O2d_i = ((unsigned) (0.1*this->O2_delay));
 
 	//first identify regions withh 100 flow, data is between these
 	size_t max_valid_length = 0, current_valid_length = 0,
@@ -181,9 +201,6 @@ void MBWRawFile::trim_and_apply_delay()  //unfinished -- need to think about raw
 		max_valid_length = current_valid_length;
 		start_point = current_start_point;
 	}
-
-
-
 
 	//trim down data and adjust for delays
 	//last_invalid_point = std::max(std::max(CO2d_i, O2d_i), last_invalid_point);
@@ -325,7 +342,7 @@ void MBWRawFile::measure_breath_start_end_points()
 	}
 }
 
-void MBWRawFile::define_washin_and_washout()
+void MBWRawFile::define_washin_and_washout(const double & washin_min_conc)
 {
 	bool go = true;
 	size_t nb = 0;
@@ -435,88 +452,134 @@ void MBWRawFile::define_washin_and_washout()
 	}
 }
 
-int get_raw_mbw_data(const std::vector<std::string> & argv, 
+std::shared_ptr<LCIParameterList> get_raw_mbw_data(const int &argc, char** argv,
 					 std::vector<std::shared_ptr<MBWRawFile>> & mbw_files,
-					 double & Vbag, double & machine_ds)
+					 LCIOptionList *options)
 {
 	//command line inputs
-	//nfiles, file, file, ..., file,  CO2delay, VMRIbag, machine_ds, O2delay
-	int argc = int(argv.size());
-	if(argc > 2)
-	{
-		//fist argument is number of tests to do
-		int Nfiles = StringToNumber<int>(argv[1]);
-		mbw_files.resize(Nfiles);
-		if(argc > 1 + Nfiles)
-		{
-			double CO2_delay, O2_delay;
-			//C02 delay will be first argument after filenames
-			if(argc > 2 + Nfiles)
-			{
-				CO2_delay = StringToNumber<double>(argv[2+Nfiles]);
-			}
-			else 
-			{
-				cout << "Please give Flow Gas Delay (in seconds):";
-				cin >> CO2_delay;
-			}
-			//O2 delay will be same (it isn't, but not used currently anyway)
-			
-			if(argc > 3 + Nfiles) 
-			{
-				Vbag = StringToNumber<double>(argv[3+Nfiles]);
-			}
-			else 
-			{
-				cout << "Enter MRI bag volume used (in L):";
-				cin >> Vbag;
-			}
+	//raw_files, options_file, params_file
+	std::vector<std::string> extensions;
+	extensions.resize(3);
+	extensions[0] = RAW_FILE_EXT;
+	extensions[1] = OPTIONS_FILE_EXT;
+	extensions[2] = PARAMS_FILE_EXT;
+	
+	options->get_filenames_from_args(extensions, argc, argv);
 
-			if(argc > 4 + Nfiles)
-			{
-				machine_ds = StringToNumber<double>(argv[4+Nfiles]);
-			}
-			else 
-			{
-				cout << "Enter MBW machine deadspace used (in L):";
-				cin >> machine_ds;
-			}
-
-			if(argc > 5 + Nfiles)
-			{
-				O2_delay = StringToNumber<double>(argv[5+Nfiles]);
-			}
-			else 
-			{
-				cout << "Assuming O2 delay same as CO2 delay." << endl;
-				O2_delay = CO2_delay;
-			}
-
-			for(int n = 0; n < Nfiles; n++)
-			{
-				mbw_files[n] = std::make_shared<MBWRawFile>(argv[2+n], CO2_delay, O2_delay);
-			}
-		}
-		else
-		{
-			cout << "Error: not enough arguments!" << endl;
-			return 1;
-		}
+	if(options->filename_exists(OPTIONS_FILE_EXT)) {
+		options->read_file(options->get_filename(OPTIONS_FILE_EXT));  //if options file given, read it in
 	}
-	else
-	{
-		cout << "Error: not enough arguments!" << endl;
-		return 1;
+	else {
+		std::cerr << "No .options file given, using default options." << std::endl;
 	}
 
-	return 0;
+	std::shared_ptr<LCIParameterList> params = 
+		std::make_shared<LCIParameterList>(options->count_files_with_ext(RAW_FILE_EXT));
+	if(options->filename_exists(PARAMS_FILE_EXT)) {
+		params->read_file(options->get_filename(PARAMS_FILE_EXT));  //if options file given, read it in
+	}
+	else {
+		std::cerr << "No .params file given, using default params." << std::endl;
+	}
+
+	//loop over raw files and add to vector
+
+	mbw_files.resize(params->get_Ntests());
+	std::stringstream ss;
+	for(int n = 0; n < params->get_Ntests(); n++){
+		std::string CO2_param, O2_param;
+		ss << CO2_DELAY_PARAM_NAME << "_" << n+1;
+		CO2_param = ss.str().c_str();
+		ss.str("");
+		ss.clear();
+		ss << O2_DELAY_PARAM_NAME << "_" << n+1;
+		O2_param = ss.str().c_str();
+		ss.str("");
+		ss.clear();
+		mbw_files[n] = std::make_shared<MBWRawFile>(options->get_filename(RAW_FILE_EXT,n), 
+			                                        params->get_param<double>(CO2_param)->get_value(),
+			                                        params->get_param<double>(O2_param)->get_value(),
+													params->get_param<double>(WASHIN_MIN_CONC_NAME)->get_value());
+	}
+
+	//int argc = int(argv.size());
+	//if(argc > 2)
+	//{
+	//	//fist argument is number of tests to do
+	//	int Nfiles = StringToNumber<int>(argv[1]);
+	//	mbw_files.resize(Nfiles);
+	//	if(argc > 1 + Nfiles)
+	//	{
+	//		double CO2_delay, O2_delay;
+	//		//C02 delay will be first argument after filenames
+	//		if(argc > 2 + Nfiles)
+	//		{
+	//			CO2_delay = StringToNumber<double>(argv[2+Nfiles]);
+	//		}
+	//		else 
+	//		{
+	//			cout << "Please give Flow Gas Delay (in seconds):";
+	//			cin >> CO2_delay;
+	//		}
+	//		//O2 delay will be same (it isn't, but not used currently anyway)
+	//		
+	//		if(argc > 3 + Nfiles) 
+	//		{
+	//			Vbag = StringToNumber<double>(argv[3+Nfiles]);
+	//		}
+	//		else 
+	//		{
+	//			cout << "Enter MRI bag volume used (in L):";
+	//			cin >> Vbag;
+	//		}
+
+	//		if(argc > 4 + Nfiles)
+	//		{
+	//			machine_ds = StringToNumber<double>(argv[4+Nfiles]);
+	//		}
+	//		else 
+	//		{
+	//			cout << "Enter MBW machine deadspace used (in L):";
+	//			cin >> machine_ds;
+	//		}
+
+	//		if(argc > 5 + Nfiles)
+	//		{
+	//			O2_delay = StringToNumber<double>(argv[5+Nfiles]);
+	//		}
+	//		else 
+	//		{
+	//			cout << "Assuming O2 delay same as CO2 delay." << endl;
+	//			O2_delay = CO2_delay;
+	//		}
+
+	//		for(int n = 0; n < Nfiles; n++)
+	//		{
+	//			mbw_files[n] = std::make_shared<MBWRawFile>(argv[2+n], CO2_delay, O2_delay);
+	//		}
+	//	}
+	//	else
+	//	{
+	//		cout << "Error: not enough arguments!" << endl;
+	//		return 1;
+	//	}
+	//}
+	//else
+	//{
+	//	cout << "Error: not enough arguments!" << endl;
+	//	return 1;
+	//}
+
+	return params;
 }
 
-void MBWTest::process_MBW_inputs(std::shared_ptr<MBWRawFile> MBWFile)
+void MBWTest::process_MBW_inputs(std::shared_ptr<MBWRawFile> MBWFile, LCIOptionList *opt,
+		LCIParameterList *par, const int & Test_no)
 {
 	//adjust fluxes for BTPS
 	Eigen::VectorXd adjusted_washin_flux, adjusted_washout_flux;
-	this->adjust_flow_for_BTPS_and_bias(MBWFile, adjusted_washin_flux, adjusted_washout_flux);
+	double BTPSin = calc_BTPS(par, Test_no);
+	this->adjust_flow_for_BTPS(MBWFile, adjusted_washin_flux, adjusted_washout_flux, BTPSin);
 
 	//first get end washin conc
 	this->measure_Cinit(MBWFile, adjusted_washin_flux);
@@ -524,17 +587,18 @@ void MBWTest::process_MBW_inputs(std::shared_ptr<MBWRawFile> MBWFile)
 	//measure washout breath volumes
 	this->measure_washout_breath_volumes(MBWFile, adjusted_washout_flux);
 
-	this->measure_LCI_FRC_FDS(MBWFile, adjusted_washout_flux);
+	this->measure_LCI_FRC_FDS(MBWFile, adjusted_washout_flux, 
+		                      par->get_param<double>(LCI_CUTOFF_PARAM_NAME)->get_value());
 	
 	//trim dataset down
 	size_t BreathsToKeep;
-	if(breath_cutoff_option == 'l')
+	if(opt->get_option<char>(CUTOFF_KEY)->get_value() == LCI_CUTOFF_CODE)
 	{
 		BreathsToKeep = min(this->Nbreaths, this->LCI_point+3);
 	}
 	else
 	{
-		BreathsToKeep = min(this->Nbreaths, Nbreaths_keep);
+		BreathsToKeep = min(this->Nbreaths, par->get_param<int>(NBREATH_CUTOFF_NAME)->get_value());
 	}
 	this->FRC0 = (this->cumulative_exhaled_SF6vols[BreathsToKeep-1] 
 	             - this->cumulative_inhaled_SF6vols[BreathsToKeep-1])
@@ -577,12 +641,19 @@ void MBWTest::process_MBW_inputs(std::shared_ptr<MBWRawFile> MBWFile)
 	}
 	this->Nbreaths = BreathsToKeep;  //update Nbreaths
 	//do exhalation measurements
-	this->define_breath_measurements(MBWFile, adjusted_washout_flux);
+	this->define_breath_measurements(MBWFile, adjusted_washout_flux,
+		opt->get_option<bool>(MEASURE_SUBSET_KEY)->get_value(), 
+		opt->get_option<bool>(FIXED_VOLSTEP_KEY)->get_value(), 
+		opt->get_option<bool>(MEASURE_INSPIRED_KEY)->get_value(), 
+		par->get_param<int>(NMEASURE_PARAM_NAME)->get_value(),
+		par->get_param<int>(NPHASEII_PARAM_NAME)->get_value(),
+		par->get_param<int>(NPHASEIII_PARAM_NAME)->get_value(),
+		par->get_param<double>(SIM_STEP_FRAC_NAME)->get_value());
 }
 
-void MBWTest::adjust_flow_for_BTPS_and_bias(std::shared_ptr<MBWRawFile> MBWfile, 
+void MBWTest::adjust_flow_for_BTPS(std::shared_ptr<MBWRawFile> MBWfile, 
 			                       Eigen::VectorXd & adjusted_washin_flow, 
-						           Eigen::VectorXd & adjusted_washout_flow)
+						           Eigen::VectorXd & adjusted_washout_flow, const double & BTPSin)
 {
 	Eigen::VectorXd volume, v_in;
 	size_t total_timesteps = MBWfile->count_washin_timesteps() + MBWfile->count_washout_timesteps();
@@ -594,71 +665,34 @@ void MBWTest::adjust_flow_for_BTPS_and_bias(std::shared_ptr<MBWRawFile> MBWfile,
 	//define window for counting up tidal volume in and out (trim off first and last breaths)
 	double cumul_exh = 0;
 	double cumul_inh = 0;
-	size_t start_count, end_count;
-	if(MBWfile->count_washin_inhalations() > 1) start_count = MBWfile->get_washin_inhalation_start(1);
-	else start_count = MBWfile->get_washout_inhalation_start(0);
-	size_t Nbwashout = MBWfile->count_washout_inhalations();
-	if(Nbwashout > 1) end_count = MBWfile->get_washout_inhalation_start(Nbwashout-2);
-	else end_count = MBWfile->get_washout_inhalation_start(0);
-	//volume = Eigen::VectorXd::Zero(total_timesteps + 1);
-	//v_in = Eigen::VectorXd::Zero(total_timesteps + 1);
-	/*double m=1,c,m_last=1;
-	int iteration = 0;
-	while(abs(m_last) > 0.001)
-	{*/
+	//size_t start_count, end_count;
 	for(size_t i = 0; i < total_timesteps; i++)
 	{
-		double adjusted_flow_h;
 		if(MBWfile->get_flow(i) < 0) //expiration
 		{
 			if(i < Nwashin)
 			{
 				/*if(iteration==0)*/ adjusted_washin_flow[i] = MBWfile->get_flow(i)*BTPSout;
-				adjusted_flow_h = adjusted_washin_flow[i];
 			}
 			else
 			{
 				/*if(iteration==0)*/ adjusted_washout_flow[i - Nwashin] = MBWfile->get_flow(i)*BTPSout;
-				adjusted_flow_h = adjusted_washout_flow[i - Nwashin];
 			}
-			if(i >= start_count && i < end_count) cumul_exh += -adjusted_flow_h*0.01;
-			/*v_in[i+1] = v_in[i];*/
+
 		}
-		else  //inspiration
+		else  //inspiration -- TODO correct for BTPS in
 		{
 			if(i < Nwashin)
 			{
-				/*if(iteration==0)*/ adjusted_washin_flow[i] = MBWfile->get_flow(i);
-				/*else adjusted_washin_flow[i] *= (1-m);*/
-				adjusted_flow_h = adjusted_washin_flow[i];
-				
+				/*if(iteration==0)*/ adjusted_washin_flow[i] = MBWfile->get_flow(i)*BTPSin;			
 			}
 			else
 			{
-				/*if(iteration==0)*/ adjusted_washout_flow[i - Nwashin] = MBWfile->get_flow(i);
-				/*else adjusted_washout_flow[i - Nwashin] *= (1-m);*/
-				adjusted_flow_h = adjusted_washout_flow[i - Nwashin];
+				/*if(iteration==0)*/ adjusted_washout_flow[i - Nwashin] = MBWfile->get_flow(i)*BTPSin;
 			}
-			/*v_in[i+1] = v_in[i] + adjusted_flow_h*0.01;*/
-			if(i >= start_count && i < end_count) cumul_inh += adjusted_flow_h*0.01;
 		}
-		/*volume[i+1] = volume[i] + adjusted_flow_h*0.01;*/
 	}
-	//m_last=m;
-	//linear_fit(v_in, volume, m, c);
-	//iteration++;
-	//}
 
-	//normalise inhalation volumes by exhalation
-	double inh_sf = cumul_exh/cumul_inh;
-	for(size_t i = 0; i < total_timesteps; i++)
-	{
-		if(MBWfile->get_flow(i) > 0) //inspiration
-		{
-			if(i < Nwashin) adjusted_washin_flow[i] *= inh_sf;
-			else adjusted_washout_flow[i - Nwashin] *= inh_sf;
-		}
-	}
 }
 
 void MBWTest::measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile, 
@@ -755,6 +789,7 @@ void MBWTest::measure_washout_breath_volumes(std::shared_ptr<MBWRawFile> MBWFile
 			this->exhaled_breath_pts[nb] = MBWFile->get_washout_inhalation_start(nb+1)
 				                         - MBWFile->get_washout_exhalation_start(nb);
 		}
+	
 		//record cumulative expired volume
 		if(nb > 0)
 		{
@@ -772,7 +807,8 @@ void MBWTest::measure_washout_breath_volumes(std::shared_ptr<MBWRawFile> MBWFile
 }
 
 void MBWTest::measure_LCI_FRC_FDS(std::shared_ptr<MBWRawFile> MBWFile, 
-								  const Eigen::VectorXd & washout_flux)
+								  const Eigen::VectorXd & washout_flux,
+								  const double & LCI_frac)
 {
 	//approximate LCI and FDS
 	this->Cet.resize(this->Nbreaths);   //end tidal conc container
@@ -896,19 +932,30 @@ void MBWTest::measure_LCI_FRC_FDS(std::shared_ptr<MBWRawFile> MBWFile,
 }
 
 void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile, 
-										 const Eigen::VectorXd & washout_flux)
+										 const Eigen::VectorXd & washout_flux,
+										 const bool & measure_subset, const bool & fixed_step_size,
+										 const bool & measure_inspired_vols,
+										 const int & Nmeasure, const int & NphaseII, 
+										 const int & NphaseIII, const double & vol_sim_step_frac)
 {
-	size_t BreathsToMeasure;
-	if(MEASURE_SUBSET) BreathsToMeasure = min(size_t(this->Nbreaths), Nmeasure);
+	int BreathsToMeasure;
+	if(measure_subset) BreathsToMeasure = min(this->Nbreaths, Nmeasure);
 	else  BreathsToMeasure = size_t(this->Nbreaths);
 	double NextToMeasure = 0, step = double(this->Nbreaths) / double(BreathsToMeasure);
 	double VTmed = median<double>(this->exhaled_breath_vols);   //median breath vol
 	int Npts_per_breath = NphaseII + NphaseIII;
-	this->conc_measurements.reserve(Npts_per_breath*BreathsToMeasure);
-	this->measurement_times.reserve(Npts_per_breath*BreathsToMeasure);
-	this->measurement_steps.reserve(Npts_per_breath*BreathsToMeasure);
+	int tot_exh_points = (Npts_per_breath)*BreathsToMeasure;
+	int tot_measured_conc_points = tot_exh_points;
+	int tot_measured_igvol_points = tot_exh_points + BreathsToMeasure;
+	if(measure_inspired_vols){
+		tot_measured_igvol_points += BreathsToMeasure;    //add inspired SF6 vol to measurements too
+	}
+	this->conc_measurement_steps.reserve(tot_measured_conc_points);
+	this->igvol_measurement_steps.reserve(tot_measured_igvol_points);
 	double vol_sim_step = 0;
-	if(FIXED_STEP_SIZE)  //run simulation with fixed step size on both inhalation and exhalation
+
+	//reserve for number of vol_steps
+	if(fixed_step_size)  //run simulation with fixed step size on both inhalation and exhalation
 	{
 		double totbvol = 0;
 		for(size_t i = 0; i < this->exhaled_breath_vols.size(); i++)
@@ -919,24 +966,32 @@ void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile,
 		{
 			totbvol += this->inhaled_breath_vols[i];
 		}
-		this->sim_vol_steps.reserve(size_t(2*this->Nbreaths/vol_sim_step_frac)+1);
-		this->sim_step_durations.reserve(size_t(2*this->Nbreaths/vol_sim_step_frac)+1);
-		vol_sim_step = vol_sim_step_frac*totbvol/(2*this->Nbreaths);
+		size_t n_steps = size_t(2*this->Nbreaths/vol_sim_step_frac)+1;
+		this->sim_vol_steps.reserve(n_steps);
+		this->sim_step_durations.reserve(n_steps);
+		this->igvol_measurements.reserve(n_steps);
+		this->conc_measurements.reserve(n_steps);
+		vol_sim_step = vol_sim_step_frac*totbvol/(2*this->Nbreaths); //size of vol steps
 	}
 	else   //run simulation with vol steps defined by measurement points
 	{
-		this->sim_vol_steps.reserve(Npts_per_breath*BreathsToMeasure + 2*this->Nbreaths);
-		this->sim_step_durations.reserve(Npts_per_breath*BreathsToMeasure + 2*this->Nbreaths);
+		this->sim_vol_steps.reserve(tot_exh_points + 2*this->Nbreaths);
+		this->sim_step_durations.reserve(tot_exh_points + 2*this->Nbreaths);
+		this->igvol_measurements.reserve(tot_exh_points + 2*this->Nbreaths);
+		this->conc_measurements.reserve(tot_exh_points + 2*this->Nbreaths);
 	}
 
+	//get all the volume steps first
 	for(int CurrentBreath = 0; CurrentBreath < this->Nbreaths; CurrentBreath++)
 	{
 		//add inhalation steps to simulation points
 		vector<double> cumul_vol_steps;
-		if(FIXED_STEP_SIZE)
+		if(fixed_step_size)
 		{
 			size_t vsteps =  size_t(this->inhaled_breath_vols[CurrentBreath]/vol_sim_step) + 1;
 			cumul_vol_steps.resize(vsteps);
+			size_t i = 0; //input step
+			
 			for(size_t j = 0; j < vsteps; j++) 
 			{
 				if(j < vsteps - 1) //all but last step the same
@@ -980,18 +1035,35 @@ void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile,
 			}
 			if(j == cumul_vol_steps.size() - 1) this->sim_step_durations.push_back(
 				                     (inhaled_breath_pts[CurrentBreath] - 1)*0.01 - t_last);
-
+			if(CurrentBreath == size_t(NextToMeasure))
+			{
+				if(measure_inspired_vols){
+					size_t first_inh_step = this->sim_vol_steps.size() - 
+											cumul_vol_steps.size();  //first step of inhalation on this breath
+					this->igvol_measurement_steps.push_back(first_inh_step);
+				}
+			}
 		}
 		else
 		{
-			//otherwise inhalation is a single step
+			//otherwise inhalation is a single step -- just calc ig vol and conc at all of these here
 			this->sim_vol_steps.push_back(this->inhaled_breath_vols[CurrentBreath]);
 			this->sim_step_durations.push_back(this->inhaled_breath_pts[CurrentBreath]*0.01);
+			if(CurrentBreath == size_t(NextToMeasure))
+			{
+				if(measure_inspired_vols){
+					this->igvol_measurement_steps.push_back(this->sim_vol_steps.size() - 1);
+				}
+			}
 		}
 
-		//exhalation
+
+		
+
+		//define flow steps for fixed step size case
+
 		cumul_vol_steps.resize(0);
-		if(FIXED_STEP_SIZE)
+		if(fixed_step_size)
 		{
 			size_t vsteps =  size_t(this->exhaled_breath_vols[CurrentBreath]/vol_sim_step) + 1;
 			cumul_vol_steps.resize(vsteps);
@@ -1038,117 +1110,162 @@ void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile,
 			if(j == cumul_vol_steps.size() - 1) this->sim_step_durations.push_back(
 				               (exhaled_breath_pts[CurrentBreath] - 1)*0.01 - t_last);
 		}
+		
 
 
-		//get measurements
+		//define measurement steps
 		if(CurrentBreath == size_t(NextToMeasure))
 		{
+			//if(measure_inspired_vols){
+			//	size_t first_inh_step = this->sim_vol_steps.size() - 
+			//		                  cumul_vol_steps.size() - 1;  //first step of inhalation on this breath
+			//	this->igvol_measurement_steps.push_back(end_inh_step);
+			//}
 			if(this->exhaled_breath_vols[CurrentBreath] >= 2.0*this->median_FDS)  //check breath is valid
 			{
 				//measure_points
 				vector<double> measure_vols(Npts_per_breath);
-				for(size_t i = 0; i < NphaseII; i++)
+				for(int i = 0; i < NphaseII; i++)
 				{
 					measure_vols[i] = this->median_FDS*(0.5 + (double(i)/double(NphaseII-1)));
 				}
-				for(size_t i = 0; i < NphaseIII; i++)
+				for(int i = 0; i < NphaseIII; i++)
 				{
 					double vol_left = 0.95*this->exhaled_breath_vols[CurrentBreath] - 1.5*this->median_FDS;
 					measure_vols[NphaseII+i] = 1.5*this->median_FDS + (double(i+1)/double(NphaseIII))*vol_left;
 				}
-				if(FIXED_STEP_SIZE)  //shift measured vols to align with sim steps
+				if(fixed_step_size)  //shift measured vols to align with sim steps
 				{
-					size_t i = 0, j=0;
+					//size_t i = 0, j=0;
 					size_t start_step = this->sim_vol_steps.size() - cumul_vol_steps.size();
-					while(j < cumul_vol_steps.size())
+					for(size_t j = 0; j < cumul_vol_steps.size()-1; j++)
 					{
-						while(i < measure_vols.size() && cumul_vol_steps[j] >= measure_vols[i])
-						{
-							if(j > 0) measure_vols[i] = cumul_vol_steps[j-1];
-							else measure_vols[i] = cumul_vol_steps[j];
-							this->measurement_steps.push_back(start_step + j);
-							i++;
-						}
-						j++;
+						this->conc_measurement_steps.push_back(start_step + j);
+						this->igvol_measurement_steps.push_back(start_step + j);
 					}
+
+					//while(j < cumul_vol_steps.size())
+					//{
+					//	while(i < measure_vols.size() && cumul_vol_steps[j] >= measure_vols[i])
+					//	{
+					//		if(j > 0) 
+					//		{
+					//			if(cumul_vol_steps[j] - measure_vols[i] > measure_vols[i] - cumul_vol_steps[j-1])
+					//			{ //closer to step j
+					//				measure_vols[i] = cumul_vol_steps[j];
+					//			}
+					//			else
+					//			{
+					//				measure_vols[i] = cumul_vol_steps[j-1];
+					//			}
+					//		}
+					//		else measure_vols[i] = cumul_vol_steps[j];
+					//		if(this->conc_measurement_steps.size() == 0 ||
+					//		   this->conc_measurement_steps.back() < start_step + j)
+					//			//only add if this measurement is different to the last
+					//		{
+					//			this->conc_measurement_steps.push_back(start_step + j);
+					//			this->igvol_measurement_steps.push_back(start_step + j);
+					//		}
+				
+					//		i++;
+					//	}
+					//	j++;
+					//}
 				} 
 				else   //measurement steps are the same as sim steps -> add sim steps
 				{
 					cumul_vol_steps = measure_vols;
 					size_t start_step = this->sim_vol_steps.size();
-					for(size_t j = 0; j < cumul_vol_steps.size(); j++)
+					size_t i_start = MBWFile->get_washout_exhalation_start(CurrentBreath);
+					size_t it = 0;
+					double t_last = 0.0, th = 0.0; //time relative to exhalation start
+					double cev_old = 0, cev = -washout_flux[i_start+it]*0.01;
+					for(size_t j = 0; j < cumul_vol_steps.size(); j++) //these are the vol steps for the simulation
 					{
 						if(j > 0) this->sim_vol_steps.push_back(cumul_vol_steps[j-1] - cumul_vol_steps[j]); //-ve
 						else this->sim_vol_steps.push_back(- cumul_vol_steps[j]);
-						this->measurement_steps.push_back(start_step + j);
+						this->conc_measurement_steps.push_back(start_step + j);  //all are, by definition, measurement steps
+						this->igvol_measurement_steps.push_back(start_step + j);  //all are, by definition, measurement steps
+						//now loop over exhaled breath points to find the duration of each step
+						while(it < exhaled_breath_pts[CurrentBreath] && cev < cumul_vol_steps[j])   //loop until we find point just after this sim step
+						{
+							cev_old = cev;
+							it++;
+							cev -= washout_flux[i_start+it]*0.01;
+						}
+						th = 0.01*((cev - cumul_vol_steps[j])*(it-1) + (cumul_vol_steps[j] - cev_old)*it)/(cev-cev_old);
+						//add duration
+						this->sim_step_durations.push_back(th-t_last);
+						t_last = th;
 					}
 					this->sim_vol_steps.push_back(cumul_vol_steps.back() - this->exhaled_breath_vols[CurrentBreath]); //-ve: rest of exhalation
+					this->igvol_measurement_steps.push_back(start_step + cumul_vol_steps.size()); 
+					double t_end = 0.01*(exhaled_breath_pts[CurrentBreath] - 1);
+					this->sim_step_durations.push_back(t_end - t_last);
 				}
-
-
-				//measure conc values at these steps from data
-				size_t j = 0;
-				double cev = 0, cev_old = 0;
-				double th = 0, t_last = 0;
-				//loop over time points from current breath
-				for(size_t it = 0; it < exhaled_breath_pts[CurrentBreath]; it++)
-				{
-					cev_old = cev;
-					size_t i = MBWFile->get_washout_exhalation_start(CurrentBreath) + it;
-					cev -= washout_flux[i]*0.01;
-					//loop until we exceed next vol step
-					while(j < measure_vols.size() && cev > measure_vols[j])  //measure once cev exceeds volume
-					{
-						double conc = 0;
-						//interpolate between neighbouring points if there is an i-1 point
-						if(it > 0) 
-						{
-							conc = ((measure_vols[j] - cev_old)*MBWFile->get_washout_conc(i)
-							            +  (cev - measure_vols[j])*MBWFile->get_washout_conc(i-1))/ (cev - cev_old);
-							th = 0.01*((measure_vols[j] - cev_old)*it + (cev - measure_vols[j])*(it-1))/ (cev - cev_old);
-						}
-						else conc = MBWFile->get_washout_conc(i);
-						//add to conc measurement
-						this->conc_measurements.push_back(conc);
-						//record vol step where measurement was taken
-						this->measurement_times.push_back(i*0.01);
-						if(!FIXED_STEP_SIZE) this->sim_step_durations.push_back(th-t_last);
-						t_last = th;
-						j++;
-					}
-				}
-				double t_end = 0.01*(exhaled_breath_pts[CurrentBreath] - 1);
-				this->sim_step_durations.push_back(t_end - t_last);
 				NextToMeasure += step;
 			}
-			else   //breath is not measured
-			{
+			else { //breath is only measured at start or end point
 				NextToMeasure += 1;
-				if(!FIXED_STEP_SIZE) 
+				if(!fixed_step_size) 
 				{
 					this->sim_vol_steps.push_back(-this->exhaled_breath_vols[CurrentBreath]);
 					this->sim_step_durations.push_back(this->exhaled_breath_pts[CurrentBreath]*0.01);
 				}
 			}
 		}
-		else  //breath is not measured
-		{
-			if(!FIXED_STEP_SIZE) 
+		else { //breath is not measured
+			if(!fixed_step_size) 
 			{
 				this->sim_vol_steps.push_back(-this->exhaled_breath_vols[CurrentBreath]);
 				this->sim_step_durations.push_back(this->exhaled_breath_pts[CurrentBreath]*0.01);
 			}
 		}
 	}
+	
+	//measure conc values and net SF6 at all steps from data
+	double net_ig_vol_expired = 0;
+	int ih = 0;
+	double t_start = MBWFile->get_washout_exhalation_start(0)*0.01;
+	double th = t_start;
+	for( size_t j = 0; j < this->sim_step_durations.size(); j++)
+	{
+		th += this->sim_step_durations[j];
+		size_t ibelow = int(floor((th-t_start)/(0.01)));
+		for(size_t i = ih; i <= ibelow; i++)  //count up to point before end of this step
+		{
+			net_ig_vol_expired += -washout_flux[i]*MBWFile->get_washout_conc(i)*0.01;
+		}
+		if(((th - (t_start + ibelow*0.01)) > 0) && (ibelow+1 < MBWFile->count_washout_timesteps()))
+		{
+			double frac_below = (th - (t_start + ibelow*0.01))/0.01;  //how far along next step is the simulation step
+			net_ig_vol_expired += -frac_below*washout_flux[ibelow+1]*MBWFile->get_washout_conc(ibelow+1)*0.01;  //add part of ig flux from this step
+			this->igvol_measurements.push_back(net_ig_vol_expired);
+			this->conc_measurements.push_back((frac_below*MBWFile->get_washout_conc(ibelow+1) + 
+			(1-frac_below)*MBWFile->get_washout_conc(ibelow)));
+			net_ig_vol_expired += -(1-frac_below)*washout_flux[ibelow+1]*MBWFile->get_washout_conc(ibelow+1)*0.01;
+			ih = ibelow + 2;
+		}
+		else
+		{
+			this->igvol_measurements.push_back(net_ig_vol_expired);
+			this->conc_measurements.push_back(MBWFile->get_washout_conc(ibelow));
+			ih = ibelow + 1;
+		}
+	}
 }
 
-void MBWData::process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles)
+void MBWData::process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>> & MBWfiles,
+	 LCIOptionList * opt, LCIParameterList * par)
 {
+	std::vector<MBWTest> MBWTests;
 	this->sim_vol_steps.resize(MBWfiles.size());
 	this->sim_step_durations.resize(MBWfiles.size());
-	this->measurement_times.resize(MBWfiles.size());
-	this->measurement_steps.resize(MBWfiles.size());
+	this->conc_measurement_steps.resize(MBWfiles.size());
+	this->igvol_measurement_steps.resize(MBWfiles.size());
 	this->conc_measurements.resize(MBWfiles.size());
+	this->igvol_measurements.resize(MBWfiles.size());
 	this->Cinit.resize(MBWfiles.size());
 	this->Cinit_std.resize(MBWfiles.size());
 	this->LCI.resize(MBWfiles.size());
@@ -1158,23 +1275,54 @@ void MBWData::process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>>
 	this->VT0 = 0;
 	this->FRC0 = 0;
 	this->dead_space = 0;
+	int no_of_breaths = 0;
 	for(size_t n = 0; n < MBWfiles.size(); n++)
 	{
-		MBWTest MBWtest(MBWfiles[n]);
-		this->sim_vol_steps[n] = MBWtest.sim_vol_steps;
-		this->sim_step_durations[n] = MBWtest.sim_step_durations;
-		this->measurement_times[n] = MBWtest.measurement_times;
-		this->measurement_steps[n] = MBWtest.measurement_steps;
-		this->conc_measurements[n] = MBWtest.conc_measurements;
-		this->Cinit[n] = MBWtest.Cinit;
-		this->Cinit_std[n] = MBWtest.Cinit_std;
-		this->LCI[n] = MBWtest.LCI;
+		MBWTests.push_back(MBWTest(MBWfiles[n], opt, par, n));
+		no_of_breaths += MBWTests[n].Nbreaths;
+	}
 
-		this->Tinsp += 0.01*double(median(MBWtest.inhaled_breath_pts));
-		this->Texp += 0.01*double(median(MBWtest.exhaled_breath_pts));
-		this->VT0 += median(MBWtest.exhaled_breath_vols);
-		this->FRC0 += MBWtest.FRC0;
-		this->dead_space += MBWtest.median_FDS;
+	double median_ratio;
+	if(opt->get_option<bool>(CORRECT_FOR_BIAS_KEY)->get_value()){
+		vector<double> ratios(no_of_breaths);
+		int tnb = 0;
+		for(size_t n = 0; n < MBWfiles.size(); n++)
+		{
+			for(int nb = 0; nb < MBWTests[n].Nbreaths; nb++)
+			{
+				ratios[tnb] = MBWTests[n].inhaled_breath_vols[nb]/MBWTests[n].exhaled_breath_vols[nb];
+				tnb++;
+			}
+		}
+		median_ratio = median(ratios);
+	}
+
+	for(size_t n = 0; n < MBWfiles.size(); n++)
+	{
+		this->sim_vol_steps[n] = MBWTests[n].sim_vol_steps; //scale these
+		if(opt->get_option<bool>(CORRECT_FOR_BIAS_KEY)->get_value()){
+			for(size_t ns = 0; ns < this->sim_vol_steps[n].size(); ns++)
+			{
+				if(this->sim_vol_steps[n][ns] > 0) //inhale
+				{
+					this->sim_vol_steps[n][ns] /= median_ratio;  //correction on inhaled vols
+				}
+			}
+		}
+		this->sim_step_durations[n] =  MBWTests[n].sim_step_durations;
+		this->conc_measurement_steps[n] = MBWTests[n].conc_measurement_steps;
+		this->igvol_measurement_steps[n] = MBWTests[n].igvol_measurement_steps;
+		this->conc_measurements[n] =  MBWTests[n].conc_measurements;
+		this->igvol_measurements[n] =  MBWTests[n].igvol_measurements;
+		this->Cinit[n] = MBWTests[n].Cinit;
+		this->Cinit_std[n] =  MBWTests[n].Cinit_std;
+		this->LCI[n] =  MBWTests[n].LCI;
+
+		this->Tinsp += 0.01*double(median(MBWTests[n].inhaled_breath_pts));
+		this->Texp += 0.01*double(median(MBWTests[n].exhaled_breath_pts));
+		this->VT0 += median(MBWTests[n].exhaled_breath_vols);
+		this->FRC0 += MBWTests[n].FRC0;
+		this->dead_space += MBWTests[n].median_FDS;
 	}
 	this->FRC0 /= double(MBWfiles.size());
 	this->dead_space /= double(MBWfiles.size());
@@ -1198,23 +1346,33 @@ void write_processed_washout_data(const std::string & filepath, const MBWData* m
 		outfile.open(path.string());
 
 		outfile << DURATION_NAME << "," << VOLUME_NAME << "," 
-			    << MEASURED_NAME << "," << CONC_NAME << ","
-				<< DIST_WEIGHT_NAME << endl;
-		int im = 0;
+			    << CONC_MEASURED_NAME << "," << CONC_NAME << ","
+				<< IGVOL_MEASURED_NAME << "," << IGVOL_NAME << "," << DIST_WEIGHT_NAME << endl;
+		size_t im_conc = 0, im_igvol = 0;
 		for(int is = 0; is < int(mbw_tests->sim_vol_steps[it].size()); is++)
 		{
 			outfile << mbw_tests->sim_step_durations[it][is] << "," 
 					<< mbw_tests->sim_vol_steps[it][is] << ",";
-			if(mbw_tests->measurement_steps[it][im] == is)
+			if(mbw_tests->conc_measurement_steps[it][im_conc] == is)
 			{
-				outfile << "1," << mbw_tests->conc_measurements[it][im];
-				if(im < mbw_tests->conc_measurements[it].size() - 1) im++;
+				outfile << "1,";
+				if(im_conc < mbw_tests->conc_measurement_steps[it].size()-1) im_conc++;
 			}
 			else
 			{
-				outfile << "0,0,0";
+				outfile << "0,";
 			}
-			outfile << endl;
+			outfile << mbw_tests->conc_measurements[it][is] << ",";
+			if(mbw_tests->igvol_measurement_steps[it][im_igvol] == is)
+			{
+				outfile << "1,";
+				if(im_igvol < mbw_tests->igvol_measurement_steps[it].size()-1) im_igvol++;
+			}
+			else
+			{
+				outfile << "0,";
+			}
+			outfile << mbw_tests->igvol_measurements[it][is] << endl;
 		}	
 		outfile.close();
 	}
@@ -1232,19 +1390,20 @@ void write_mbw_summary(const std::string & filepath, const MBWData* mbw_tests)
 	ofstream outfile;
 	outfile.open(path.string());
 	outfile << CINIT_NAME << "," << CINIT_STD_NAME << "," << FRC_NAME << "," 
-		    << FDS_NAME << "," << MACHINE_DS_NAME << "," << VBAG_NAME << ","
-			<< LCI_NAME << endl;
+		    << FDS_NAME << "," << MACHINE_DS_NAME << "," << REBREATHE_VOL_NAME << ","
+			<< VBAG_NAME << ", " << LCI_NAME << endl;
 	for(int it = 0; it < int(mbw_tests->Cinit.size()); it++)
 	{
 		outfile << mbw_tests->Cinit[it] << "," << mbw_tests->Cinit_std[it] << ",";
 		if(it == 0)
 		{
 			outfile << mbw_tests->FRC0 << "," << mbw_tests->dead_space << ","
-				    << mbw_tests->machine_ds << "," << mbw_tests->Vbag;
+				    << mbw_tests->machine_ds << "," << mbw_tests->extra_rebreathe_vol << ", " 
+					<< mbw_tests->Vbag;
 		}
 		else
 		{
-			outfile << ",,,";
+			outfile << ",,,,";
 		}
 		outfile << "," << mbw_tests-> LCI[it] << endl;
 	}
