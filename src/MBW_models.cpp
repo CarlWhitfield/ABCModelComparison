@@ -1582,28 +1582,61 @@ void TrumpetModelBase::build_model(const MBWModelOptions & opt,
 		param_dict[param_names_h[ip]] = params_h[ip];
 	}
 
-	double VD = param_dict.at(VD_PARAM_NAME);
+
 	
-	//these can be defined in builder
-	int MaxGen = 15;
-	int CondGenMixMax = 6;
+
+	//these can be defined in builder as they don't change
+	int MaxCondGen = 15;
+	int MaxSplitNo = 6;
 	double L2dratio = 3.0;
-	int NCGMMedges = pow(2,CondGenMixMax);
-	int NCondEdges = (2 + MaxGen - CondGenMixMax)*NCGMMedges - 1;
+	//end
+
+	double VD = param_dict.at(VD_PARAM_NAME);
+	double VDSfrac = param_dict.at(VDSFRAC_PARAM_NAME);
+	//this determines generation where it splits
+	//each gen has same volume 
+	int SplitDepth = int(VDSfrac*MaxCondGen); //round down to nearest generation number
+
 	std::vector<Eigen::Triplet<double>> IncTrips;
-	int edge_no = 0;
-	for(int j = 0; j <= CondGenMixMax; j++)
+	
+
+	for(int j = 0; j <= SplitDepth; j++)
 	{
-		for(int k = 0; k < pow(2,j); k++)
-		{
-			int nin = 
-			int nout = 
-		}
+
+
 	}
 
 
-	this->Incidence.setFromTriplets(IncTrips.begin(),IncTrips.end());
+	//THIS WOULD BE USED IF RESOLVING BRANCHING, PROBABLY UNECESSARY
+	// std::vector<Eigen::Triplet<double>> IncTrips;
+	// IncTrips.reserve(2*NCondEdges)
+	// for(int j = 0; j <= CondGenMixMax; j++)
+	// {
+	// 	for(int k = 0; k < pow(2,j); k++)
+	// 	{
+	// 		//nodes numbered within generation
+	// 		int nin = pow(2,j)-1 + (k%2);  //node in
+	// 		int nout = pow(2,j+1)-1 + k;   //node out
+	// 		//edge no. is node out - 1
+	// 		IncTrips.push_back(Eigen::Triplet<double>(nout-1,nin,1.0))  
+	// 		IncTrips.push_back(Eigen::Triplet<double>(nout-1,nout,-1.0))
+	// 	}
+	// }
+	// //trumpets from here on out
+	// for(int j = CondGenMixMax+1; j <= MaxGen; j++)
+	// {
+	// 	for(int k = 0; k < pow(2,CondGenMixMax); k++)
+	// 	{
+	// 		//add another 2^CGMM for each gen after this point
+	// 		int nin = (1 + j - CondGenMixMax)*pow(2,CondGenMixMax)* - 1 + k    ;  //
+	// 		int nout
+	// 	}
+	// }
 
+
+
+	this->Incidence.setFromTriplets(IncTrips.begin(),IncTrips.end());
+	////
 
 	//SDS[0] = std::make_shared<FlexibleVolumeElement>(VDS, 0, 0);
 	//this->shared_ds = std::make_shared<DSVolume>(SDS);
