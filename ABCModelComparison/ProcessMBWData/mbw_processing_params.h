@@ -17,13 +17,17 @@ const std::string Cutoff_option_name_list[] = {"LCI", "NBreaths"};
 #define MEASURE_SUBSET_KEY "Measure_subset"
 #define FIXED_VOLSTEP_KEY "Fixed_volstep"
 #define TIDAL_WASHIN_KEY "Tidal_washin"
+#define PRINT_MRI_OUTPUTS "Print_MRI"
+#define PRINT_IDEAL_LCI "Print_ideal_LCI"
+#define PRINT_COMPARTMENTS "Print_compartments"
 
 //Param definitions
 #define TEMPERATURE_PARAM_NAME "Temperature"
 #define HUMIDITY_PARAM_NAME "Humidity"
 #define PRESSURE_PARAM_NAME "Pressure"
 #define CO2_DELAY_PARAM_NAME "CO2Delay"
-#define O2_DELAY_PARAM_NAME "CO2Delay"
+#define O2_DELAY_PARAM_NAME "O2Delay"
+#define CINIT_PARAM_NAME "Cinit"
 #define MACHINE_DS_PARAM_NAME "MachineDS"
 #define REBREATHE_VOL_PARAM_NAME "RBVol"
 #define MRI_VBAG_PARAM_NAME "Vbag"
@@ -43,11 +47,15 @@ const std::string Cutoff_option_name_list[] = {"LCI", "NBreaths"};
 #define DEFAULT_MEASURE_SUBSET false   //if false all breaths are used
 #define DEFAULT_FIXED_STEP_SIZE false   //use fixed vol step size in sims?
 #define DEFAULT_TIDAL_WASHIN false   //use washin too for breath volume correction
+#define DEFAULT_PRINT_MRI_OUTPUTS false
+#define DEFAULT_PRINT_IDEAL_LCI false
+#define DEFAULT_PRINT_COMPARTMENTS true
 #define DEFAULT_TEMP 20.0   //Celcius
 #define DEFAULT_HUMIDITY 50.0   //Relative %
 #define DEFAULT_PRESSURE 760.0   //Atmospheric mmHg
 #define DEFAULT_CO2_DELAY 1000.0  //milliseconds
 #define DEFAULT_O2_DELAY 1000.0  //milliseconds
+#define DEFAULT_CINIT 0.2
 #define DEFAULT_MACHINE_DS 48.0  //millilitres
 #define DEFAULT_REBREATHE_VOL 65.0  //millilitres 
 #define DEFAULT_MRI_VBAG 1.0 //litres

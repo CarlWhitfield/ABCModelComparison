@@ -199,7 +199,7 @@ private:
 	void adjust_flow_for_BTPS(std::shared_ptr<MBWRawFile> MBWfile, 
 		       Eigen::VectorXd & adjusted_washin_flow, Eigen::VectorXd & adjusted_washout_flow, 
 			   const double & BTPSin);
-	void measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile, const Eigen::VectorXd & washin_flux);
+	void measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile, const Eigen::VectorXd & washin_flux, const double & Cinit_input);
 	void measure_washout_breath_volumes(std::shared_ptr<MBWRawFile> MBWFile, 
 		                                const Eigen::VectorXd & washout_flux);
 	void measure_LCI_FRC_FDS(std::shared_ptr<MBWRawFile>, const Eigen::VectorXd & washout_flux,

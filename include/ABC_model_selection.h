@@ -230,6 +230,7 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 	//std::vector<std::string> other_outputs;
 	//std::vector<int> other_output_lengths;
 	std::string other_headers;
+	this->cutoff_distance = 1E6;  //to avoid NaN distances being stored, use large cutoff for gen 0
 	while(go)
 	{
 		std::vector<std::vector<double>> local_params(this->ModelGen.size());
@@ -280,7 +281,7 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 					model->simulate(&output);
 					local_tot_sims++;
 					dist = this->DistFunc->distance(this->ModelInput->measured, output.simulated, this->ModelInput->dist_weights);
-					if(t_gen == 0 || dist < this->cutoff_distance)
+					if(dist < this->cutoff_distance && dist >= 0)  //>0 avoids -inf vals sneaking through
 					{
 						repeat = false;
 					}

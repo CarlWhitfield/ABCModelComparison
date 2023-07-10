@@ -58,7 +58,13 @@ LCIParameterList::LCIParameterList(const int & Ntests){  //constructor for optio
 		this->add(ss.str().c_str(), std::make_shared<PositiveDoubleParam>(DEFAULT_O2_DELAY,
 		std::string(ss.str().c_str())));
 		ss.str("");
-		ss.clear();
+		ss.clear();		
+
+		ss << CINIT_PARAM_NAME << "_" << i+1;
+		this->add(ss.str().c_str(), std::make_shared<PositiveDoubleParam>(DEFAULT_CINIT,
+		std::string(ss.str().c_str())));
+		ss.str("");
+		ss.clear();		
 	}
 
 	//add params that cannot change between tests

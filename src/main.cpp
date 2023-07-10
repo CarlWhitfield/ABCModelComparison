@@ -110,7 +110,10 @@ int main(int argc, char *argv[])
 
 		for (int i=0;i<argc;i++) 
 		{
-			args[3+i]=argv[i];
+			ss.clear();
+			ss.str("");
+			ss << "\"" << argv[i] << "\"";
+			args[3+i]=ss.str().c_str();
 		}
 
 		//function to set mpi executable running in separate process (windows only)

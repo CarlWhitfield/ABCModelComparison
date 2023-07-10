@@ -142,7 +142,6 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 	this->machine_ds = StringToNumber<double>(topline[col_numbers.at(MACHINE_DS_NAME)]);
 	this->dead_space = StringToNumber<double>(topline[col_numbers.at(FDS_NAME)]);
 	this->rebreathe_vol = StringToNumber<double>(topline[col_numbers.at(REBREATHE_VOL_NAME)]);
-	this->MRI_vbag = StringToNumber<double>(topline[col_numbers.at(VBAG_NAME)]);
 	//our definition of FRC in this model excludes dead space
 	this->FRC0 -= this->dead_space;   //IMPORTANT
 
@@ -326,46 +325,47 @@ bool MBWModelOutputs::extra_outputs() const
 void MBWModelOutputs::print_extra_outputs(std::string & line) const
 {
 	std::stringstream ss;
-	for(int imri = 0; imri < int(this->MRI_sample.size()); imri++)
+	for(int iV = 0; iV < NCOMPS; iV++)
 	{
-		if(imri > 0) ss << ",";
-		ss << this->MRI_sample[imri];
+		if(iV > 0) ss << ",";
+		ss << this->Vrates[iV];
 	}
-	std::string line1 = ss.str().c_str();
-	ss.clear();
-	ss.str("");
+	for(int iV = 0; iV < NCOMPS; iV++)
+	{
+		ss << ",";
+		ss << this->Vdelays[iV];
+	}
 	for(int isim = 0; isim < int(this->simulated.size()); isim++)
 	{
 		ss << ",";
 		ss << this->simulated[isim];
 	}
-	std::string line2 = ss.str().c_str();
-	line = line1 + line2;
+	line = ss.str().c_str();
 }
 
 void MBWModelOutputs::get_headers(std::string & line) const
 {
 	std::stringstream ss;
-	for(int imri = 0; imri < int(this->MRI_sample.size()); imri++)
+	for(int iV = 0; iV < NCOMPS; iV++)
 	{
-		if(imri > 0) ss << ",";
-		ss << "MRI_sample_" << imri;
+		if(iV > 0) ss << ",";
+		ss << "VentRate" << iV;
 	}
-	std::string line1 = ss.str().c_str();
-	ss.clear();
-	ss.str("");
+	for(int iV = 0; iV < NCOMPS; iV++)
+	{
+		ss << ",";
+		ss << "VentDelay" << iV;
+	}
 	for(int isim = 0; isim < int(this->simulated.size()); isim++)
 	{
 		ss << ",";
 		ss << "MBW_sample_" << isim;
 	}
-	std::string line2 = ss.str().c_str();
-	line = line1 + line2;
+	line = ss.str().c_str();
 }
 
 MBWModelOptions::MBWModelOptions()   //default model options
 {
-	this->NMR_samples = NMRI_SAMPLES;
 	this->Nunits = NCOMPS;
 	this->mix_vol_frac_step = NMV_FRAC_STEP;
 	this->washout_start_inflation = 0.0;
@@ -804,7 +804,6 @@ void MBWModelBase::set_input_data(const MBWModelInputs * inputs)
 	}
 	this->mouth_point = inputs->rebreathe_vol;
 	this->conc_measurement_point = inputs->rebreathe_vol - inputs->machine_ds; 
-	this->MRI_bag_vol = inputs->MRI_vbag;
 }
 
 void MBWModelBase::build_model(const MBWModelOptions & opt,
@@ -838,7 +837,14 @@ void MBWModelBase::build_model(const MBWModelOptions & opt,
 	//generate ventilation dist
 	vector<double> Vratios;
 	this->generate_vent_dist(param_dict, opt.Nunits, Vratios);
-	this->build_airway_model(VD, VDSfrac, Vbag, Vratios, opt);
+	//build lung units
+	this->units.resize(opt.Nunits);
+	for(int i = 0; i < opt.Nunits; i++)
+	{
+		//build based on options
+		this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
+	}
+	this->build_airway_model(VD, VDSfrac, opt);
 
 	//sync option
 	if(opt.breath_model_type == SYNC_MODEL_CODE)  this->create_sync_vent_solver();
@@ -864,11 +870,8 @@ void MBWModelBase::build_model(const MBWModelOptions & opt,
 		this->washout_start_inflation[n] = (Deltas[0] + (1 + Deltas[0])*Deltas[n])*param_dict.at(FRC_PARAM_NAME);
 	}
 
-
 	//assume step is relative to DS volume
-	this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
 	this->params = params_h;
-	this->NMRIPoints = opt.NMR_samples;
 	this->simulate_washin = opt.simulate_washin;
 	this->washout_start_timepoint = opt.washout_start_timepoint;
 }
@@ -915,14 +918,6 @@ void MBWModelBase::run_washout_model(MBWModelOutputs* output)
 	this->measure_values(output);
 }
 
-void MBWModelBase::run_MRI_model(MBWModelOutputs* output)
-{
-	this->reset_model(0);   //sets all concs to zero
-	this->set_inhaled_bc(1.0);
-	this->breath_step(this->MRI_bag_vol, 5.0);
-	this->measure_MRI_dist(output);
-}
-
 void MBWModelBase::simulate(MBWModelOutputs* output)
 {
 	//run simulation
@@ -930,8 +925,6 @@ void MBWModelBase::simulate(MBWModelOutputs* output)
 
 	//run MBW
 	this->run_washout_model(output);
-	//run MRI measurement
-	this->run_MRI_model(output);
 }
 
 void MBWModelBase::create_sync_vent_solver()
@@ -952,15 +945,16 @@ void MBWModelBase::create_async_vent_solver(const double & delay_ts)
 }
 
 void CompartmentalModelBase::build_airway_model(const double & VD, const double & VDSfrac,
-	     const double & Vbag, const vector<double> & Vratios, const MBWModelOptions & opt)
+												const MBWModelOptions & opt)
 {
+	using namespace std;
 	vector<std::shared_ptr<FlexibleVolumeElement>> SDS(1);
 	double VDS = this->mouth_point;
 	double VDP = VD;
-	if(VDSrac > 0.0) //shared dead-space volume
+	if(VDSfrac > 0.0) //shared dead-space volume
 	{
-		VDS += VDSfrac*param_dict.at(VD_PARAM_NAME);
-		VDP -= VDSfrac*param_dict.at(VD_PARAM_NAME);
+		VDS += VDSfrac*VD;
+		VDP -= VDSfrac*VD;
 		this->use_mouth_conc_generic = true;
 	}
 	else
@@ -973,7 +967,6 @@ void CompartmentalModelBase::build_airway_model(const double & VD, const double 
 
 	//initialise model based on params
 	this->private_ds.resize(opt.Nunits);
-	this->units.resize(opt.Nunits);
 	double VDperunit = VDP / ((double) opt.Nunits);
 	//build private dead-space objects
 	for(int i = 0; i < opt.Nunits; i++)
@@ -983,15 +976,9 @@ void CompartmentalModelBase::build_airway_model(const double & VD, const double 
 		this->private_ds[i] = std::make_shared<DSVolume>(PDS);
 	}	
 
-	//build lung units
-	for(int i = 0; i < opt.Nunits; i++)
-	{
-		//build based on options
-		this->initialise_lung_unit(this->units[i], Vbag, Vbag, Vratios[i], param_dict);
-	}
-
 	//create mixing point
 	double mp_vol_scale = opt.mix_vol_frac_step*(VDS + VDP);
+	this->mixing_point = std::make_shared<MixingPoint>(mp_vol_scale);
 }
 
 double CompartmentalModelBase::get_mouth_conc()
@@ -1043,57 +1030,14 @@ void CompartmentalModelBase::measure_values(MBWModelOutputs* output)
 		im_start += int(this->igvol_measurement_steps->at(n).size());   
 		
 	}
-}
 
-void CompartmentalModelBase::measure_MRI_dist(MBWModelOutputs* output)
-{
-	//assume private DS is not measured
-	//sample randomly from model
-	double tot_gas_vol = 0, tot_ig_vol = 0;
-	double non_gas_frac = 0.1;
-	std::vector<double> cumulative_vol(this->units.size() + this->private_ds.size());
-	for(size_t i = 0; i < this->units.size(); i++)
+	//fill Vrates vector
+	output->Vrates.resize(NCOMPS);
+	output->Vdelays.resize(NCOMPS);
+	for(int iV = 0; iV < NCOMPS; iV++)
 	{
-		tot_gas_vol += this->units[i]->get_volume();
-		tot_ig_vol += this->units[i]->get_conc()*this->units[i]->get_volume();
-		cumulative_vol[i] = tot_gas_vol;
-	}
-	//for(size_t i = 0; i < this->private_ds.size(); i++)
-	//{
-	//	tot_gas_vol += this->private_ds[i]->get_volume();
-	//	tot_ig_vol += this->private_ds[i]->sum_ig_volume();
-	//	cumulative_vol[this->units.size() + i] = tot_gas_vol;
-	//}
-
-	boost::random::uniform_01<> udist;
-	boost::random::normal_distribution<> ndist(0, MRI_NOISE_FRAC);
-	output->MRI_sample.resize(this->NMRIPoints);
-	for(int i = 0; i < this->NMRIPoints; i++)
-	{
-		double vol_point;
-		double measure_error;
-		if(MRI_NOISE_FRAC > 0)  //if random
-		{
-			vol_point = tot_gas_vol*udist(*(rng.get()));
-			measure_error = (tot_ig_vol/tot_gas_vol)*ndist(*(rng.get()));
-		}
-		else   //if deterministic -- evenly spaced samples
-		{
-			vol_point = tot_gas_vol*(i+0.5)/this->NMRIPoints;
-			measure_error = 0;
-		}
-		size_t n = 0;
-		while(cumulative_vol[n] < vol_point)
-		{
-			n++;
-		}
-		if(n < this->units.size())
-		{
-			output->MRI_sample[i] = this->units[n]->get_ig_volume() 
-				             / this->units[n]->get_volume() + measure_error;
-		}
-
-		if(output->MRI_sample[i] < 0) output->MRI_sample[i] = 0;  //no negative values allowed
+		output->Vrates[iV] = this->units[iV]->get_vent_ratio();
+		output->Vdelays[iV] = this->units[iV]->get_delay_ts();
 	}
 }
 
@@ -1593,39 +1537,31 @@ void AsyncVentilationSolver::compute_volume_changes(const double & dvol, const d
 	this->Vp_old = Vp_new;
 }
 
-void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSfrac, 
-	const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt)
+void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSfrac,
+										  const MBWModelOptions & opt)
 {
 	using namespace std;
-	map<std::string, double> param_dict;
-	for(int ip = 0; ip < int(params_h.size()); ip++)
-	{
-		param_dict[param_names_h[ip]] = params_h[ip];
-	}
-
-	double VDPhys = VD - this->machine_ds;
-	double VDMouth = this->MouthFrac*VDPhys;
-	double VDLung = (1-this->MouthFrac)*VDPhys;
-	
+	double VDPhys = VD - this->mouth_point;
+	double VDMouth = TRUMPET_MOUTH_FRAC*VDPhys;
+	double VDLung = (1-TRUMPET_MOUTH_FRAC)*VDPhys;
 
 	//these can be defined in builder as they don't change
 	int MaxCondGen = 15;
 	double L2Dratio = 3.0;
 	int NLmin = 20;
 	//can we get max flow rate from the data? -- for now guess 0.5L/s
-	double DiffConstDm2 = 0.00105;  //SF6 
 	double PeMax = 1.0;
 	double LengthScaleFactor = pow(0.5,1.0/3.0);
 	double MouthFrac = 0.2;
 	//end
 	
 	//add in something to deal with mouth and DS volume here
-	vector<std::shared_ptr<FlexibleVolumeElement>> ExtraDS(1);
-	ExtraDS[0] = std::make_shared<FlexibleVolumeElement>(VD - VDLung, 0, 0);
-	this->extra_ds = std::make_shared<DSVolume>(ExtraDS);
+	vector<shared_ptr<FlexibleVolumeElement>> ExtraDS(1);
+	ExtraDS[0] = make_shared<FlexibleVolumeElement>(VD - VDLung, 0, 0);
+	this->extra_ds = make_shared<DSVolume>(ExtraDS);
 
 	double GenSep = VDSfrac*(MaxCondGen);
-	double V0L = (VD - MouthAndMachineDSVol)/(MaxCondGen+1);  //V per gen
+	double V0L = VDLung/(MaxCondGen+1);  //V per gen
 	double R0dm = pow(3*V0L*(1-LengthScaleFactor)/(2*M_PI*L2Dratio*log(2.0)),1.0/3.0);
 	//assume scherer diff in airways
 	double dxapprox = 2*0.37*R0dm*PeMax;
@@ -1633,7 +1569,7 @@ void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSf
 	double Lsep = 2*R0dm*L2Dratio*(1.0-pow(LengthScaleFactor,GenSep))/(1.0-LengthScaleFactor);
 	int NL = max(NLmin,int(ceil(Ltot/dxapprox)));
 	double dx = Ltot/double(NL);
-	double NLsep = int(Lsep/dx);
+	int NLsep = int(Lsep/dx);
 	int NCondNodes = 1 + NLsep + (NL - NLsep)*NCOMPS;
 	int NCondEdges = NLsep + (1 + NL - NLsep)*NCOMPS;
 	std::vector<Eigen::Triplet<double>> IncTrips;

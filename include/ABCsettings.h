@@ -2,7 +2,7 @@
 #define SETTINGS_H
 
 //ABC settings
-#define N_PROCS	10  //number of processors to use
+#define N_PROCS	10 //number of processors to use
 #define N_GENS 15   //0 to just keep going
 #define N_ACCEPT 500 //1120 //1400// 1000  //min number of accepted
 #define N_CUT 200   //670 //800 //500 //fraction to use as cutoff

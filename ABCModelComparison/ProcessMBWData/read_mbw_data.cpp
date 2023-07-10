@@ -163,11 +163,9 @@ void MBWRawFile::read_raw_data(const std::string & fname, const double & washin_
 }
 
 //tested and works
-void MBWRawFile::trim_and_apply_delay()  //unfinished -- need to think about raw data format
+void MBWRawFile::trim_and_apply_delay() 
 {
 	//file in 10 ms steps
-	vector<double> time_new, SF6_new, O2_new, CO2_new, flow_new;
-
 	//delay in time steps (converted from secs)
 	unsigned CO2d_i = ((unsigned) (0.1*this->CO2_delay));
 	unsigned O2d_i = ((unsigned) (0.1*this->O2_delay));
@@ -226,13 +224,15 @@ void MBWRawFile::measure_breath_start_end_points()
 	bool inhaling;
 	this->inhalation_start_pts.reserve(size_t(this->time.size()/(500)));
 	this->exhalation_start_pts.reserve(size_t(this->time.size()/(500)));
-	//determine if inhale or exhale for first 0.5s
-	double sum = 0;
-	for(size_t np = 0; np < std::min(size_t(50), this->time.size()); np++)
+	//determine if inhale or exhale for first 0.2s
+	int count_inh = 0;
+	int count_exh = 0;
+	for(size_t np = 0; np < std::min(size_t(20), this->time.size()); np++)
 	{
-		sum += this->flow_data[np];
+		if(this->flow_data[np] >= 0) count_inh += 1;
+		else count_exh += 1;
 	}
-	if(sum >= 0)   //inhalation first
+	if(count_inh > count_exh)   //inhalation first
 	{
 		inhaling = true;
 		this->inhalation_start_pts.push_back(0);
@@ -242,20 +242,21 @@ void MBWRawFile::measure_breath_start_end_points()
 		inhaling = false;
 		this->exhalation_start_pts.push_back(0);
 	}
-	for(int n = 0; n < int(this->time.size()); n++) //loop over whole washout
+	int time_of_last_large_flow_rate = 0;
+	int termination_point = int(this->time.size());
+	for(int n = 0; n < termination_point; n++) //loop over whole washout
 	{
 		if(inhaling)
 		{
 			if(this->flow_data[n] < 0)   //exhalation
 			{
 				double exhaled_pts = 1;
-				int np = 1;
-				while(np < 20 && n+np < int(this->time.size())) //if next .2 of a second mostly exhaling
+				int nplim = std::min(int(20),int(this->time.size())-n);
+				for(int np = 1; np < nplim; np++)
 				{
 					if( this->flow_data[n+np] < 0 ) exhaled_pts += 1;
-					np++;
 				}
-				if(exhaled_pts > 15)   //need 75% for change of direction
+				if(exhaled_pts > 0.75*nplim)   //need 75% for change of direction
 				{
 					inhaling = false;
 					this->exhalation_start_pts.push_back(n);
@@ -339,6 +340,20 @@ void MBWRawFile::measure_breath_start_end_points()
 			inhalation_start_pts.erase(inhalation_start_pts.begin() + wrong_exhalations[iw]
 		                            + 1 - exh_offset);
 		}
+	}
+
+	//trim to termination point
+	int nb = int(this->inhalation_start_pts.size())-1;
+	while(this->inhalation_start_pts[nb] > termination_point)
+	{
+		this->inhalation_start_pts.pop_back();
+		nb--;
+	}
+	nb = int(this->exhalation_start_pts.size())-1;
+	while(this->exhalation_start_pts[nb] > termination_point)
+	{
+		this->exhalation_start_pts.pop_back();
+		nb--;
 	}
 }
 
@@ -449,6 +464,46 @@ void MBWRawFile::define_washin_and_washout(const double & washin_min_conc)
 	for(size_t nb = 0; nb < this->exhalation_start_pts.size(); nb++)  //correct start points
 	{
 		this->exhalation_start_pts[nb] -= washout_start;
+	}
+
+	//trim down washout data -- do not include long pauses
+	//do this but only on washout
+	int termination_point = this->time.size();
+	int time_of_last_large_flow_rate = 0;
+	for(int n = 0; n < termination_point; n++)
+	{
+		if(abs(this->flow_data[n]) > 0.01)   //registers as non-zero
+		{
+			time_of_last_large_flow_rate = n;
+		}
+		else
+		{
+			if (n - time_of_last_large_flow_rate > 500) //greater than 5 second pause
+			{
+				//cut data off here
+				termination_point = time_of_last_large_flow_rate+1;
+			}
+		}
+	}
+	if(termination_point < this->time.size()) //trim data
+	{
+		this->time = vector<double>(this->time.begin(), this->time.begin() + termination_point);
+		this->flow_data = vector<double>(this->flow_data.begin(), this->flow_data.begin() + termination_point);
+		this->conc_data = vector<double>(this->conc_data.begin(), this->conc_data.begin() + termination_point);
+		this->CO2_data = vector<double>(this->CO2_data.begin(), this->CO2_data.begin() + termination_point);
+		this->O2_data = vector<double>(this->O2_data.begin(), this->O2_data.begin() + termination_point);
+		int last_inh = 0;
+		while(this->inhalation_start_pts[last_inh] < termination_point)
+		{
+			last_inh++;
+		}
+		this->inhalation_start_pts = vector<size_t>(this->inhalation_start_pts.begin(), this->inhalation_start_pts.begin() + last_inh);
+		int last_exh = 0;
+		while(this->exhalation_start_pts[last_exh] < termination_point)
+		{
+			last_exh++;
+		}
+		this->exhalation_start_pts = vector<size_t>(this->exhalation_start_pts.begin(), this->exhalation_start_pts.begin() + last_exh);
 	}
 }
 
@@ -582,7 +637,13 @@ void MBWTest::process_MBW_inputs(std::shared_ptr<MBWRawFile> MBWFile, LCIOptionL
 	this->adjust_flow_for_BTPS(MBWFile, adjusted_washin_flux, adjusted_washout_flux, BTPSin);
 
 	//first get end washin conc
-	this->measure_Cinit(MBWFile, adjusted_washin_flux);
+	std::string Cinit_param;
+	std::stringstream ss;
+	ss << CINIT_PARAM_NAME << "_" << Test_no+1;
+	Cinit_param = ss.str().c_str();
+	ss.str("");
+	ss.clear();
+	this->measure_Cinit(MBWFile, adjusted_washin_flux, par->get_param<double>(Cinit_param)->get_value());
 
 	//measure washout breath volumes
 	this->measure_washout_breath_volumes(MBWFile, adjusted_washout_flux);
@@ -696,7 +757,7 @@ void MBWTest::adjust_flow_for_BTPS(std::shared_ptr<MBWRawFile> MBWfile,
 }
 
 void MBWTest::measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile, 
-							const Eigen::VectorXd & washin_flux)
+							const Eigen::VectorXd & washin_flux, const double & Cinit_input)
 {
 	size_t last_washin_exh = MBWFile->count_washin_exhalations() - 1;
 	double cumulative_vol = 0;
@@ -725,6 +786,17 @@ void MBWTest::measure_Cinit(std::shared_ptr<MBWRawFile> MBWFile,
 	this->Cinit = m1;
 	double var = m2 - m1*m1;  //machine error can cause issues if var very small
 	this->Cinit_std = sqrt(max(var,0.0));
+	if(abs(this->Cinit - Cinit_input) > 0.05*Cinit_input)
+	{
+		if(Cinit_input != DEFAULT_CINIT) //if changed from default
+		{
+			std::cout << "Cinit significantly different to input value, measured: " << this->Cinit << " input: " << Cinit_input << std::endl;
+			std::cout << "Changing to input value and std changed to 1% of value" << std::endl;
+			this->Cinit = Cinit_input;
+			this->Cinit_std = 0.01*this->Cinit;
+		}
+	}
+
 }
 
 void MBWTest::measure_washout_breath_volumes(std::shared_ptr<MBWRawFile> MBWFile, 
@@ -1180,7 +1252,7 @@ void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile,
 					size_t i_start = MBWFile->get_washout_exhalation_start(CurrentBreath);
 					size_t it = 0;
 					double t_last = 0.0, th = 0.0; //time relative to exhalation start
-					double cev_old = 0, cev = -washout_flux[i_start+it]*0.01;
+					double cev_old = 0, cev = -washout_flux[i_start+it]*0.01;   //exhaled vol at it = 0 and it = 1
 					for(size_t j = 0; j < cumul_vol_steps.size(); j++) //these are the vol steps for the simulation
 					{
 						if(j > 0) this->sim_vol_steps.push_back(cumul_vol_steps[j-1] - cumul_vol_steps[j]); //-ve
@@ -1194,7 +1266,7 @@ void MBWTest::define_breath_measurements(std::shared_ptr<MBWRawFile> MBWFile,
 							it++;
 							cev -= washout_flux[i_start+it]*0.01;
 						}
-						th = 0.01*((cev - cumul_vol_steps[j])*(it-1) + (cumul_vol_steps[j] - cev_old)*it)/(cev-cev_old);
+						th = 0.01*((cev - cumul_vol_steps[j])*it + (cumul_vol_steps[j] - cev_old)*(it+1))/(cev-cev_old);
 						//add duration
 						this->sim_step_durations.push_back(th-t_last);
 						t_last = th;
@@ -1296,6 +1368,8 @@ void MBWData::process_data_inputs(const std::vector<std::shared_ptr<MBWRawFile>>
 		}
 		median_ratio = median(ratios);
 	}
+
+	std::cout << "Median in vs. out ratio: " << median_ratio << std::endl;
 
 	for(size_t n = 0; n < MBWfiles.size(); n++)
 	{

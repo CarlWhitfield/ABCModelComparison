@@ -16,13 +16,13 @@
 //quantities that are neither model nor patient specific
 const double SF6_NOISE = 0.0002;   //largest estimate from SNR in Horsley et al. Thorax 2007
 const double VOL_NOISE = 0.01;    //SNR for **volume** from same paper, note this probably depends on flow rate
-const double MRI_NOISE_FRAC = 0.02;    //1/SNR expected for MRI for mean -- ballpark figure
 const double VENT_RATIO_LIMIT = 10;   //maximum ventilation ratio (i.e. truncation of ventilation distribution)
+const double MOL_DIFF_SF6_DM2 = 0.00105;  //SF6 molecular diffusivity in dm^2/s
 
 //default model options
 #define NCOMPS 50  //
-#define NMRI_SAMPLES 1000
 #define NMV_FRAC_STEP 0.2
+#define TRUMPET_MOUTH_FRAC 0.2
 
 //prior limits
 const double FRC_MIN_FRAC = 0.5;   //as a fraction of MBW measured FRC
@@ -98,7 +98,7 @@ public:
 		conc_measurements, igvol_diff_measurements, conc_weights, igvol_weights;
 	std::vector<std::vector<int>> conc_measurement_steps, igvol_measurement_steps;
 	std::vector<double> Cinit, Cinit_std;
-	double dead_space, FRC0, machine_ds, MRI_vbag, rebreathe_vol; 
+	double dead_space, FRC0, machine_ds, rebreathe_vol; 
 	double av_vol_step;
 	//timestep and median fowler dead-space
 	int Ntests;
@@ -118,7 +118,7 @@ public:
 class MBWModelOutputs: public ModelOutputBase
 {
 public:
-	std::vector<double> MRI_sample;
+	std::vector<double> Vrates, Vdelays;
 	bool extra_outputs() const;
 	void print_extra_outputs(std::string & line) const;
 	void get_headers(std::string & line) const;
@@ -223,21 +223,19 @@ protected:
 	std::vector<double> Cinit;
 	const std::vector<std::vector<double>> *sim_step_durations;
 	const std::vector<std::vector<int>> *conc_measurement_steps, *igvol_measurement_steps;
-	double MRI_bag_vol;
-	int NMRIPoints;
+	std::shared_ptr<VentilationSolver> vent_solver;
+	std::vector<std::shared_ptr<LungUnit>> units;
 
 	void run_washout_model(MBWModelOutputs* output);
-	void run_MRI_model(MBWModelOutputs* output);
 
 	//this is a dummy model, so some of these virtual functions are not defined
 	//functions to be defined in derived classes
 	virtual void reset_model(const double & C0, const double & start_inflation=0.0){};
 	virtual double breath_step(const double & dvol, const double & dt){ return 0.0; }
 	virtual void measure_values(MBWModelOutputs* output){};
-	virtual void measure_MRI_dist(MBWModelOutputs* output){};
 	virtual double get_mouth_conc(){ return 0.0; }
-	virtual void build_airway_model(const double & VD, cosnt double & VDSfrac, 
-		const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt){};
+	virtual void build_airway_model(const double & VD, const double & VDSfrac,
+									const MBWModelOptions & opt){};
 	void (*generate_vent_dist)(const std::map<std::string,double> &, 
 							   const int &, std::vector<double> & );
 	void (*initialise_lung_unit)(std::shared_ptr<LungUnit> & unit, const double & V0, 
@@ -245,12 +243,13 @@ protected:
 						         const std::map<std::string,double> & params);
 
 public:
+	MBWModelBase(){};
 	inline void set_inhaled_bc(const double & c){ this->inhaled_conc = c; }
 	virtual void set_input_data(const MBWModelInputs * inputs);
 	void simulate(MBWModelOutputs* output);
 	//to be defined in derived classes
 	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
-		const std::vector<std::string> param_names_h){};
+		const std::vector<std::string> param_names_h);
 	void create_sync_vent_solver();
 	void create_async_vent_solver(const double & delay_ts);
 };
@@ -259,24 +258,19 @@ class CompartmentalModelBase: public MBWModelBase
 {
 protected:
 	//base class for compartmental models of MBW
-	std::shared_ptr<VentilationSolver> vent_solver;
-	std::vector<std::shared_ptr<LungUnit>> units;
 	std::vector<std::shared_ptr<DSVolume>> private_ds;
 	std::shared_ptr<DSVolume> shared_ds;
 	std::shared_ptr<MixingPoint> mixing_point;
 	bool is_random, use_mouth_conc_generic;
-
 	void reset_model(const double & C0, const double & start_inflation=0.0);
 	double breath_step(const double & dvol, const double & dt);
 	void measure_values(MBWModelOutputs* output);
-	void measure_MRI_dist(MBWModelOutputs* output);
 	double get_mouth_conc();
-	void build_airway_model(const double & VD, const double & VDSfrac, 
-		const double & Vbag, const std::vector<double> & Vratios, const MBWModelOptions & opt);
+	void build_airway_model(const double & VD, const double & VDSfrac,
+							const MBWModelOptions & opt);
 
 public:
 	CompartmentalModelBase(){};
-	
 	double get_end_SDS_conc();
 	double get_mouth_conc_generic();
 	double get_igvol_rebreathe();
@@ -457,6 +451,45 @@ public:
 		                std::shared_ptr<CompartmentalModelBase> & m) const;
 };
 
+class TrumpetModelBase: public MBWModelBase  
+{
+//network model based on trumpets to deal with diffusion
+protected:
+	Eigen::SparseMatrix<double> Incidence, ResLap, DifLap, AdvLap;
+	Eigen::VectorXd EdgeCSA, NodeVol, NodeConc;
+	std::shared_ptr<DSVolume> extra_ds;
+	void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSfrac,
+										  const MBWModelOptions & opt);
+public:
+	TrumpetModelBase(){};
+//	std::shared_ptr<VentilationSolver> vent_solver;
+//	std::vector<std::shared_ptr<LungUnit>> units;
+//	std::vector<std::shared_ptr<DSVolume>> private_ds;
+//	std::shared_ptr<DSVolume> shared_ds;
+//	std::shared_ptr<MixingPoint> mixing_point;
+//	bool is_random, use_mouth_conc_generic;
+//
+//	void reset_model(const double & C0, const double & start_inflation=0.0);
+//	double breath_step(const double & dvol, const double & dt);
+//	void measure_values(MBWModelOutputs* output);
+//	double get_mouth_conc();
+//	void (*generate_vent_dist)(const std::map<std::string,double> &, 
+//							   const int &, std::vector<double> & );
+//	void (*initialise_lung_unit)(std::shared_ptr<LungUnit> & unit, const double & V0, 
+//						         const double & IGV0, const double & DV, 
+//						         const std::map<std::string,double> & params);
+//
+//public:
+//	CompartmentalModelBase(){};
+//	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
+//		                     const std::vector<std::string> param_names_h);
+//	double get_end_SDS_conc();
+//	double get_mouth_conc_generic();
+//	double get_igvol_rebreathe();
+//	void create_sync_vent_solver();
+//	void create_async_vent_solver(const double & delay_ts);
+};
+
 void generate_vent_dist_lognormal_rand(const std::map<std::string,double> & params, 
 								  const int & Ncomps, std::vector<double> & x_vals);
 
@@ -480,51 +513,5 @@ void generate_async_delays(std::vector<std::shared_ptr<LungUnit>> & units, const
 
 double get_mouth_conc_compartmental_generic(CompartmentalModelBase *m);
 double get_end_SDS_conc_compartmental(CompartmentalModelBase *m);
-
-
-class TrumpetModelBase: public MBWModelBase  
-{
-//network model based on trumpets to deal with diffusion
-protected:
-	Eigen::SparseMatrix<double> Incidence, ResLap, DifLap, AdvLap;
-
-public:
-	TrumpetModelBase(){};
-	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
-		             const std::vector<std::string> param_names_h);
-
-//	std::shared_ptr<VentilationSolver> vent_solver;
-//	std::vector<std::shared_ptr<LungUnit>> units;
-//	std::vector<std::shared_ptr<DSVolume>> private_ds;
-//	std::shared_ptr<DSVolume> shared_ds;
-//	std::shared_ptr<MixingPoint> mixing_point;
-//	bool is_random, use_mouth_conc_generic;
-//
-//	void reset_model(const double & C0, const double & start_inflation=0.0);
-//	double breath_step(const double & dvol, const double & dt);
-//	void measure_values(MBWModelOutputs* output);
-//	void measure_MRI_dist(MBWModelOutputs* output);
-//	double get_mouth_conc();
-//	void (*generate_vent_dist)(const std::map<std::string,double> &, 
-//							   const int &, std::vector<double> & );
-//	void (*initialise_lung_unit)(std::shared_ptr<LungUnit> & unit, const double & V0, 
-//						         const double & IGV0, const double & DV, 
-//						         const std::map<std::string,double> & params);
-//
-//public:
-//	CompartmentalModelBase(){};
-//	void build_model(const MBWModelOptions & opt, const std::vector<double> & paramsh,
-//		                     const std::vector<std::string> param_names_h);
-//	double get_end_SDS_conc();
-//	double get_mouth_conc_generic();
-//	double get_igvol_rebreathe();
-//	void create_sync_vent_solver();
-//	void create_async_vent_solver(const double & delay_ts);
-
-
-
-
-
-};
 
 #endif
