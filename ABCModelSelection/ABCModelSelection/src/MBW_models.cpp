@@ -1,8 +1,8 @@
 #include"MBW_models.h"
 #include"MBW_model_params.h"
 #include"read_write_codes.h"
-#include<boost\filesystem.hpp>
-#include<boost\regex.hpp>
+#include<boost/filesystem.hpp>
+#include<boost/regex.hpp>
 #include<file_manip.h>
 #include<map>
 
@@ -58,7 +58,7 @@ void MBWModelInputs::read_inputs(const std::string & filepath)
 		filehead = MBWTestPaths[n].filename().string().substr(0, lastdot); 
 		std::vector<std::string> spst = string_split(filehead,"_");
 		MBWTestNumbers[n] = StringToNumber<int>(spst.back());
-		Indices[n] = n;
+		Indices[n] = int(n);
 	}
 	std::sort(Indices.begin(), Indices.end(),
        [&MBWTestNumbers](size_t i1, size_t i2) {return MBWTestNumbers[i1] < MBWTestNumbers[i2];});
@@ -882,7 +882,7 @@ void MBWModelBase::run_washout_model(MBWModelOutputs* output)
 	this->sim_igvol_cumul.resize(this->sim_vol_steps.size());
 	for(size_t n = 0; n < this->sim_vol_steps.size(); n++) //loop over MBW tests
 	{
-		int npts = this->sim_vol_steps[n].size();
+		int npts = int(this->sim_vol_steps[n].size());
 		this->sim_conc[n].resize(npts);
 		this->sim_igvol_cumul[n].resize(npts);
 		if(this->simulate_washin)

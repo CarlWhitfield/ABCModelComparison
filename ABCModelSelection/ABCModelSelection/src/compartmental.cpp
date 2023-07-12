@@ -94,7 +94,6 @@ void DSVolume::shunt_up(const std::vector<std::shared_ptr<FlexibleVolumeElement>
 {
 	this->update_conc_old();
 
-	int pos = 0;
 	double VolumeLeft = 0;
 	for(size_t i = 0; i < NewElements.size(); i++)
 	{

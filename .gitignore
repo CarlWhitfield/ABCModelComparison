@@ -23,3 +23,10 @@ ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
 *.vcxproj
 *.unsuccessfulbuild
 *.dll
+.vscode/settings.json
+*.json
+*.pbxproj
+*.xcworkspacedata
+*.plist
+*.xcuserstate
+*.plist

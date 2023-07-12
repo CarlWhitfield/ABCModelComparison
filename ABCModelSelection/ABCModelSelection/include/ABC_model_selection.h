@@ -1,6 +1,20 @@
 #ifndef ABC_MODEL_SELECTION_H
 #define ABC_MODEL_SELECTION_H
 
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
+	#include<signal.h>
+	#include<process.h>
+	#include<Windows.h>
+	#define IS_WINDOWS true
+#else
+	#include<unistd.h>
+	#include <sys/types.h>
+	#include <sys/wait.h>
+	#include<stdlib.h>
+	#include<stdio.h>
+	#define IS_WINDOWS false
+#endif
+
 #include<iostream>
 #include<fstream>
 #include<vector>
@@ -8,7 +22,7 @@
 #include<memory>
 #include<unordered_map>
 #include<mpi.h>
-#include<boost/multiprecision/random.hpp>
+#include<boost/random.hpp>
 #include<boost/math/distributions/normal.hpp>
 #include<boost/random/uniform_01.hpp>
 #include<boost/random/normal_distribution.hpp>
@@ -253,8 +267,8 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 		{
 			bool repeat = true;
 			ModelOutputs output;
-			double dist;
-			int id;
+			double dist = 0;
+			int id = 0;
 			std::vector<double> pgen;
 			while(repeat)
 			{
@@ -305,14 +319,14 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 		std::cout << "Generation " << t_gen << " complete on core " << i_core << "." << std::endl;
 		for(int im = 0; im < int(local_params.size()); im++)
 		{
-			local_model_counts[im] = local_params[im].size() / this->ModelGen[im]->get_param_count();  
+			local_model_counts[im] = int(local_params[im].size()) / this->ModelGen[im]->get_param_count();
 			//std::cout << "Core " << i_core << " model " << im << " count = " <<  local_model_counts[im] << std::endl;
 		}
 
 		//sum total model counts
 		int total_sims;
 		MPI_Allreduce(&local_tot_sims, &total_sims, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-		MPI_Allreduce(local_model_counts.data(), model_counts.data(), local_model_counts.size(), MPI_INT,
+		MPI_Allreduce(local_model_counts.data(), model_counts.data(), int(local_model_counts.size()), MPI_INT,
 			          MPI_SUM, MPI_COMM_WORLD);
 		MPI_Allgather(local_distances.data(), n_per_proc, MPI_DOUBLE, distances.data(),
 			          n_per_proc, MPI_DOUBLE, MPI_COMM_WORLD);
@@ -385,13 +399,13 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 			//gather ia_map vectors into one
 			//std::cout << i_core << ' ' << local_ia_map[im].size() << std::endl;
 			//MPI_Barrier(MPI_COMM_WORLD);
-			MPI_Gatherv(local_ia_map[im].data(), local_ia_map[im].size(), MPI_INT,
+			MPI_Gatherv(local_ia_map[im].data(), int(local_ia_map[im].size()), MPI_INT,
 						ia_map[im].data(), counts.data(), displs.data(), 
 						MPI_INT, 0, MPI_COMM_WORLD);
 			//std::cout << i_core << ' ' << local_params[im].size() << std::endl;
 			//MPI_Barrier(MPI_COMM_WORLD);
 			//gather param vectors into one
-			MPI_Gatherv(local_params[im].data(), local_params[im].size(), MPI_DOUBLE, 
+			MPI_Gatherv(local_params[im].data(), int(local_params[im].size()), MPI_DOUBLE,
 						params[im].data(), pcounts.data(), pdispls.data(), 
 						MPI_DOUBLE, 0, MPI_COMM_WORLD);
 		}
@@ -400,8 +414,8 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 		//broadcast params and ia maps
 		for(int im = 0; im < int(this->ModelGen.size()); im++)
 		{
-			MPI_Bcast(this->ia_map[im].data(), this->ia_map[im].size(), MPI_INT, 0, MPI_COMM_WORLD);
-			MPI_Bcast(this->params[im].data(), this->params[im].size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+			MPI_Bcast(this->ia_map[im].data(), int(this->ia_map[im].size()), MPI_INT, 0, MPI_COMM_WORLD);
+			MPI_Bcast(this->params[im].data(), int(this->params[im].size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 		}
 
 		this->update_weights();
@@ -449,6 +463,7 @@ int ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOut
      generate_model_id() const
 {
 	//pick model at random
+	extern std::shared_ptr<boost::random::mt19937> rng;
 	boost::random::uniform_01<> udist;
 	double rand = udist(*(rng.get()));
 	for(int im = 0; im < int(this->ModelGen.size()); im++)
@@ -467,6 +482,7 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
      generate_from_previous(const int & model_id, std::vector<double> & params) const
 {
 	//pick param set from model at random
+	extern std::shared_ptr<boost::random::mt19937> rng;
 	boost::random::uniform_01<> udist;
 	double pset = udist(*(rng.get()));
 	int nparams = this->ModelGen[model_id]->get_param_count();
@@ -743,7 +759,7 @@ void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOu
 			}
 		}
 	}
-	MPI_Bcast(weights.data(), weights.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+	MPI_Bcast(weights.data(), int(weights.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
 }
 
 template<class ModelGenerator, class Model, class DistanceFunction,
@@ -765,7 +781,7 @@ template<class ModelGenerator, class Model, class DistanceFunction,
 void ABCModelSelection<ModelGenerator,Model,DistanceFunction,ModelInputs,ModelOutputs>::
      kill_dead_models()
 {
-	int nmodels = this->ModelGen.size();
+	int nmodels = int(this->ModelGen.size());
 	std::vector<int> to_kill;
 	for(int im = 0; im < nmodels; im++)
 	{

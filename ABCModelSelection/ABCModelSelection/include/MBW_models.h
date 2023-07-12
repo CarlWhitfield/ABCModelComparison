@@ -7,6 +7,7 @@
 #include<Eigen/Sparse>
 #include<limits>
 #include<map>
+#include<cmath>
 #include<math.h>
 
 //Define which data to fit to
@@ -458,7 +459,7 @@ protected:
 	Eigen::SparseMatrix<double> Incidence, ResLap, DifLap, AdvLap;
 	Eigen::VectorXd EdgeCSA, NodeVol, NodeConc;
 	std::shared_ptr<DSVolume> extra_ds;
-	void TrumpetModelBase::build_airway_model(const double & VD, const double & VDSfrac,
+	void build_airway_model(const double & VD, const double & VDSfrac,
 										  const MBWModelOptions & opt);
 public:
 	TrumpetModelBase(){};
