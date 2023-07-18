@@ -2,17 +2,17 @@
 #define ABC_MODEL_SELECTION_H
 
 #if defined(WIN32) || defined(_WIN32) || defined(__WIN32) && !defined(__CYGWIN__)
-	#include<signal.h>
+	#define NOMINMAX   //otherwise min and max functions are messed up
 	#include<process.h>
 	#include<Windows.h>
-	#define IS_WINDOWS true
+	#define IS_WINDOWS 1
 #else
 	#include<unistd.h>
 	#include <sys/types.h>
 	#include <sys/wait.h>
 	#include<stdlib.h>
 	#include<stdio.h>
-	#define IS_WINDOWS false
+	#define IS_WINDOWS 0
 #endif
 
 #include<iostream>

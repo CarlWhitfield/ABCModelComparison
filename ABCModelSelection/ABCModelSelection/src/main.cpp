@@ -63,66 +63,6 @@ std::shared_ptr<boost::random::mt19937> rng;  //pseudorandom number generator
 			return NULL;
 		}
 	}
-#else
-	inline static pid_t start_mpicode(const std::vector<std::string> &args)
-	{
-		std::stringstream ss;
-		int argc = int(args.size());
-		ss << args[0];
-		for (int i = 1; i < argc; i++)
-		{
-			ss << " " << args[i];
-		}
-		std::string cmd = ss.str();
-
-		pid_t childPID = fork();
-		if (childPID == 0)
-		{
-			// Child process
-			std::vector<char*> argv(argc + 1, nullptr);
-			for (int i = 0; i < argc; i++)
-			{
-				argv[i] = const_cast<char*>(args[i].c_str());
-			}
-
-			// Execute the command
-			execvp(argv[0], argv.data());
-
-			// This code is executed only if execvp fails
-			perror("execvp");
-			std::cout << "evecvp failed." << std::endl;
-			return -1;
-		}
-		else if (childPID > 0)
-		{
-			// Parent process
-			int status;
-			waitpid(childPID, &status, 0);
-			if (WIFEXITED(status))
-			{
-				int exitCode = WEXITSTATUS(status);
-				if (exitCode == 0)
-				{
-					std::cout << "Child process exited successfully." << std::endl;
-				}
-				else
-				{
-					std::cout << "Child process exited with error code: " << exitCode << std::endl;
-				}
-			}
-			else
-			{
-				std::cout << "Child process exited abnormally." << std::endl;
-			}
-		}
-		else
-		{
-			// Fork failed
-			perror("fork");
-		}
-
-		return childPID;
-	}
 #endif
 
 void assign_model_gens(MBWModelInputs *inputs,
@@ -157,6 +97,7 @@ int main(int argc, char *argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &n_cores);
 	
 	//check MPI has been used, if not, use it
+#if IS_WINDOWS
 	if(n_cores != N_PROCS)
 	{
 		//restart
@@ -175,7 +116,6 @@ int main(int argc, char *argv[])
 			args[3+i]=ss.str().c_str();
 		}
 
-#if IS_WINDOWS
 		//function to set mpi executable running in separate process (windows only)
 		HANDLE ff = start_mpicode(args);
 		if(ff != NULL)    //do not exit this code until child process is complete
@@ -195,25 +135,8 @@ int main(int argc, char *argv[])
 			std::cerr<<"warning: mpiexec failed"<<std::endl;
 			return 1;
 		}
-#else
-		pid_t ff = start_mpicode(args);
-		int status;
-		pid_t result = waitpid(ff, &status, WNOHANG);
-			// wait with ten-second checks
-		if (result != 0) {
-			std::cerr<<"warning: mpiexec failed"<<std::endl;
-			return -1;
-		}
-		else {
-			while (result == 0) {
-				// Child process is still running
-				// Your wait code goes here
-				sleep(10); // Example: Wait for 10 seconds
-			}
-			return 0;
-		}
-#endif
 	}
+#endif
 	//setup rng (different on each core)
 	unsigned int seed = static_cast<unsigned int>
 			   (std::chrono::high_resolution_clock::now().time_since_epoch().count());

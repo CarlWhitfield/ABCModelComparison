@@ -411,7 +411,7 @@ void AsymmLungUnit::exhale(const double & dv, std::vector<std::shared_ptr<Flexib
 	this->conc_old = this->conc;
 	//advection step -- exhale unit with constant conc
 	this->conc = 0.5*conc1 + 0.5*conc2;
-	double dv1 = std::min(0.5*dv,(1-1E-06)*vol1);
+	double dv1 = std::min(0.5*dv,(1-1E-06)*(this->vol1));
 	double dv2 = dv - dv1;
 	this->vol1 -= dv1;
 	this->vol2 -= dv2;

@@ -2,10 +2,10 @@
 #define SETTINGS_H
 
 //ABC settings
-#define N_PROCS	10 //number of processors to use
+#define N_PROCS	1 //number of processors to use
 #define N_GENS 15   //0 to just keep going
-#define N_ACCEPT 500 //1120 //1400// 1000  //min number of accepted
-#define N_CUT 200   //670 //800 //500 //fraction to use as cutoff
+#define N_ACCEPT 10 //1120 //1400// 1000  //min number of accepted
+#define N_CUT 4   //670 //800 //500 //fraction to use as cutoff
 #define MIN_DIST 0.0 //cutoff distance, define distance so that this is reasonable
 #define USE_DIST_WEIGHTS false    //whether or not to use distance weights
 #define USE_SCALE_WEIGHTS false   //whether or not to scale breath weight by distance
