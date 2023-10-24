@@ -30,3 +30,6 @@ ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
 *.plist
 *.xcuserstate
 *.plist
+ABCModelSelection/ABCModelSelection/Dockerfile
+ABCModelSelection/ABCModelSelection/ABCModelSelection
+ABCModelSelection/ABCModelSelection.xcodeproj/*
