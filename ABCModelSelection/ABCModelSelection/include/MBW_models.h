@@ -119,6 +119,7 @@ public:
 class MBWModelOutputs: public ModelOutputBase
 {
 public:
+	double LCIideal;
 	std::vector<double> Vrates, Vdelays;
 	bool extra_outputs() const;
 	void print_extra_outputs(std::string & line) const;
@@ -216,7 +217,7 @@ protected:
 	std::vector<double> washout_start_inflation;
 	bool simulate_washin;
 	int washout_start_timepoint;
-	double mouth_point, conc_measurement_point, inhaled_conc;
+	double mouth_point, conc_measurement_point, inhaled_conc, total_DS, total_FRC;
 
 	//pointers to data from MBW input and options (stored in generator)
 	//non-pointers to data that is perturbed before use
@@ -228,6 +229,7 @@ protected:
 	std::vector<std::shared_ptr<LungUnit>> units;
 
 	void run_washout_model(MBWModelOutputs* output);
+	double calc_LCI_ideal();
 
 	//this is a dummy model, so some of these virtual functions are not defined
 	//functions to be defined in derived classes

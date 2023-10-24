@@ -325,9 +325,10 @@ bool MBWModelOutputs::extra_outputs() const
 void MBWModelOutputs::print_extra_outputs(std::string & line) const
 {
 	std::stringstream ss;
+	ss << this->LCIideal;
 	for(int iV = 0; iV < NCOMPS; iV++)
 	{
-		if(iV > 0) ss << ",";
+		ss << ",";
 		ss << this->Vrates[iV];
 	}
 	for(int iV = 0; iV < NCOMPS; iV++)
@@ -346,9 +347,10 @@ void MBWModelOutputs::print_extra_outputs(std::string & line) const
 void MBWModelOutputs::get_headers(std::string & line) const
 {
 	std::stringstream ss;
+	ss << "LCIideal";
 	for(int iV = 0; iV < NCOMPS; iV++)
 	{
-		if(iV > 0) ss << ",";
+		ss << ",";
 		ss << "VentRate" << iV;
 	}
 	for(int iV = 0; iV < NCOMPS; iV++)
@@ -411,7 +413,7 @@ void AsymmLungUnit::exhale(const double & dv, std::vector<std::shared_ptr<Flexib
 	this->conc_old = this->conc;
 	//advection step -- exhale unit with constant conc
 	this->conc = 0.5*conc1 + 0.5*conc2;
-	double dv1 = std::min(0.5*dv,(1-1E-06)*vol1);
+	double dv1 = std::min(0.5*dv,(1-1E-06)*(this->vol1));
 	double dv2 = dv - dv1;
 	this->vol1 -= dv1;
 	this->vol2 -= dv2;
@@ -820,11 +822,12 @@ void MBWModelBase::build_model(const MBWModelOptions & opt,
 	//process parameters
 	double VDSfrac = 0;
 	double VD = param_dict.at(VD_PARAM_NAME);
+	this->total_DS = VD;
 	if(param_dict.find(VDSFRAC_PARAM_NAME) != param_dict.end()) 
 	{
 		VDSfrac = param_dict.at(VDSFRAC_PARAM_NAME);
 	}
-
+	this->total_FRC = param_dict.at(FRC_PARAM_NAME);
 	double Vbag = (param_dict.at(FRC_PARAM_NAME))/ ((double) opt.Nunits);
 	//assign function pointers based on options
 	//ventilation dist options
@@ -916,6 +919,30 @@ void MBWModelBase::run_washout_model(MBWModelOutputs* output)
 		}
 	}	
 	this->measure_values(output);
+}
+
+double MBWModelBase::calc_LCI_ideal()
+{
+	double Vt = std::max(5.0*this->total_DS,this->total_FRC/2.0);
+	double cet = 1.0;
+	this->reset_model(cet, 0.0);
+	double cet_old;
+	int Nb = 0;
+	while(cet > 0.025 && Nb < 100)  //need a cutoff if sigma very large
+	{
+		cet_old = cet;
+		this->set_inhaled_bc(0);
+		this->breath_step(Vt, 2.0);
+		for(int i = 0; i < 30; i++)
+		{
+			this->breath_step(-Vt/30.0, 0.1);
+		}
+		cet = this->get_mouth_conc();
+		Nb++; //this suggests we might need to check size of exhalation steps
+	}
+	double Nbeff = ((cet_old - 0.025)*Nb + (0.025 - cet)*(Nb-1.0)) / (cet_old - cet);
+	double LCI = (Nbeff*Vt/(this->total_FRC + this->total_DS - this->mouth_point));
+	return LCI;
 }
 
 void MBWModelBase::simulate(MBWModelOutputs* output)
@@ -1039,6 +1066,7 @@ void CompartmentalModelBase::measure_values(MBWModelOutputs* output)
 		output->Vrates[iV] = this->units[iV]->get_vent_ratio();
 		output->Vdelays[iV] = this->units[iV]->get_delay_ts();
 	}
+	output->LCIideal = this->calc_LCI_ideal();
 }
 
 double CompartmentalModelBase::get_end_SDS_conc()

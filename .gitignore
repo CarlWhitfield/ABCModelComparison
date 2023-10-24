@@ -10,12 +10,6 @@
 *.pdb
 *.ilk
 *.exe
-ABCModelComparison/LSQFitCase/*
-ABCModelComparison/Debug/*
-ABCModelComparison/Release/*
-ABCModelComparison/ProcessMBWData/fixed_timestep_models.h
-ABCModelComparison/ProcessMBWData/dynamic_timestep_models.cpp
-ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
 *.opensdf
 *.sln
 
@@ -33,3 +27,4 @@ ABCModelComparison/ProcessMBWData/dynamic_timestep_models.h
 ABCModelSelection/ABCModelSelection/Dockerfile
 ABCModelSelection/ABCModelSelection/ABCModelSelection
 ABCModelSelection/ABCModelSelection.xcodeproj/*
+Alternative-versions/LSQFitCase/*
